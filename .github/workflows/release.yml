@@ -1,0 +1,100 @@
+name: Release
+
+# Publishes the binaries `scripts/build.sh` looks for, so an install compiles only where no asset
+# matches. The script derives its download URL from the manifest version, which is why the tag has
+# to agree with it.
+on:
+  push:
+    tags: ["v*"]
+
+# Read-only by default. `build` runs `cargo build`, which executes dependency build scripts, and
+# checkout persists credentials, so only the job that publishes gets write.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Tag matches the manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag against herdr-plugin.toml
+        run: |
+          manifest="$(grep -m1 '^version' herdr-plugin.toml | cut -d'"' -f2)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$manifest" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME does not match manifest version $manifest" >&2
+            exit 1
+          fi
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+
+      # musl links statically, so one Linux asset runs whatever glibc the machine has.
+      - name: Install musl tools
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The tarball holds the bare binary, which is what scripts/build.sh expects to find after it
+      # extracts. The checksum tool differs by platform.
+      - name: Package
+        run: |
+          asset="roboherd-${{ matrix.target }}.tar.gz"
+          tar -czf "$asset" -C "target/${{ matrix.target }}/release" roboherd
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roboherd-${{ matrix.target }}
+          path: |
+            roboherd-*.tar.gz
+            roboherd-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            roboherd-*.tar.gz
+            roboherd-*.tar.gz.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
