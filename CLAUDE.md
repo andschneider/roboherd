@@ -1,0 +1,44 @@
+# CLAUDE.md
+
+`roboherd` is one Rust binary backing a herdr plugin that surfaces roborev review state. See
+[README.md](README.md) for what it does and [docs/design.md](docs/design.md) for why it is shaped
+this way.
+
+## Builds
+
+Do not run `cargo build` or `cargo build --release`. Use `just check` to verify compilation and
+`cargo run -- <subcommand>` to exercise the CLI. `just package` is the release path and belongs to
+the user.
+
+This project uses a `justfile`, not a Makefile.
+
+## Boundaries
+
+Decisions, not preferences. Changing one is a design change, so raise it rather than doing it.
+[docs/design.md](docs/design.md) has the cross-module reasoning; single-concern reasoning lives in
+doc comments beside the code it constrains.
+
+- **The roborev CLI is the compatibility boundary.** No HTTP client, no generated OpenAPI client, no
+  vendored daemon models, no direct daemon endpoints.
+- **Explicit argv, never a shell.** Everything goes through `src/exec.rs`. Selected text and paths
+  must never reach a command interpreter.
+- **Commits come from git**, never from a regular expression over user text. A revision taken from
+  anywhere but `git log` is validated with `git cat-file commit <rev>` before it reaches roborev,
+  since `rev-parse --verify` accepts a SHA without reading its object and would miss one that's
+  gone.
+- **A range is git's answer, not the picker's.** Do not infer ancestry from row order, and do not
+  "fix" the range check by listing with `--first-parent`, which would hide every commit merged in
+  from a branch.
+- **Poll, do not subscribe.** No SSE, no reconnect backoff, no event subscriptions in v1.
+- **One reporter for all workspaces**, launched from `[[startup]]`. Not one watcher per workspace,
+  and not from event hooks.
+- **Workspace metadata only.** Never call `herdr pane report-agent` or otherwise participate in
+  herdr's agent aggregation.
+- **Review actions stay narrow.** The review pane may step between reviews, close its displayed job,
+  or add a comment. Canceling, rerunning, and fixing belong to `roborev tui`.
+- **Pane titles are unique.** A toggle finds its pane by matching the manifest `title` in a pane
+  listing, so renaming a `[[panes]]` title is a behavior change rather than a cosmetic one.
+
+Every binary subcommand named in `herdr-plugin.toml` maps to a `Command` variant and a function
+under `src/commands/`. Keep those three in sync. One command module may back several related
+subcommands, as `open_tui.rs` does.

@@ -1,0 +1,19 @@
+[package]
+name = "roboherd"
+version = "0.1.0"
+edition = "2024"
+description = "Herdr plugin that reports roborev review state and launches reviews"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+toml = "1.1.4"
+tui-markdown = { version = "0.3.9", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"

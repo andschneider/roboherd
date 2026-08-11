@@ -1,0 +1,62 @@
+id = "roboherd"
+name = "Roborev"
+version = "0.1.0"
+description = "Ambient roborev review status in the herdr sidebar, plus a commit review launcher"
+min_herdr_version = "0.7.5"
+platforms = ["macos", "linux"]
+
+# Runs at install from the plugin root, and a failure aborts the install. `herdr plugin link` skips
+# it, so local development still stages the binary with `just package`.
+#
+# The work is a script because herdr runs build commands as bare argv with no shell. It prefers the
+# released binary for this platform, so a Rust toolchain is needed only where none is published.
+[[build]]
+command = ["bash", "scripts/build.sh"]
+
+[[startup]]
+command = ["./bin/roboherd", "reporter"]
+
+[[panes]]
+id = "commit-picker"
+title = "Review commit"
+placement = "popup"
+width = "95%"
+height = 20
+command = ["./bin/roboherd", "pick-commit"]
+
+[[panes]]
+id = "review"
+title = "roborev review"
+placement = "split"
+command = ["./bin/roboherd", "show-review"]
+
+# One entrypoint serves both placements. `open-tui` overrides this popup with a tab when
+# `tui_placement` says so, and the title is what a pane listing reports as `label`, which is how the
+# toggle finds an open tab.
+[[panes]]
+id = "tui"
+title = "roborev"
+placement = "popup"
+width = "95%"
+# roborev's TUI hides its help footer below 15 rows, so this must clear that with margin for the
+# popup's own chrome.
+height = 20
+command = ["./bin/roboherd", "tui"]
+
+[[actions]]
+id = "review-commit"
+title = "Review commit"
+contexts = ["workspace", "pane"]
+command = ["./bin/roboherd", "open-picker"]
+
+[[actions]]
+id = "open-review"
+title = "Toggle review pane"
+contexts = ["workspace", "pane"]
+command = ["./bin/roboherd", "open-review"]
+
+[[actions]]
+id = "open-tui"
+title = "Open roborev"
+contexts = ["workspace", "pane"]
+command = ["./bin/roboherd", "open-tui"]

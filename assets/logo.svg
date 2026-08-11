@@ -1,0 +1,135 @@
+<svg role="img" aria-labelledby="title desc" xmlns="http://www.w3.org/2000/svg" width="1112" height="480" viewBox="0 16 1112 480" preserveAspectRatio="xMidYMid meet">
+  <title id="title">Roboherd logo</title>
+  <desc id="desc">A horizontal flock made from three overlapping copies of the Herdr ram.</desc>
+  <rect class="canvas" width="1112" height="512"/>
+
+  <defs>
+    <style>
+      :root {
+      --canvas: #909ead;
+      --outline: #35d49a;
+      --ram-fill: #303438;
+      --face-detail: #d9dad8;
+      --eye-fail: #e05c65;
+      --eye-pass: #5ce09e;
+      --eye-running: #e0b95c;
+      }
+
+      .canvas {
+      fill: var(--canvas);
+      }
+
+      .ram-outline {
+      fill: none;
+      stroke: var(--outline);
+      stroke-width: 120;
+      stroke-linejoin: round;
+      }
+
+      .body-outline {
+      fill: none;
+      stroke: var(--outline);
+      stroke-width: 120;
+      stroke-linejoin: round;
+      }
+
+      .ram-fill {
+      fill: var(--ram-fill);
+      stroke: none;
+      }
+
+
+      .face-detail {
+      fill: var(--face-detail);
+      stroke: none;
+      }
+
+      .eye-fail {
+      fill: var(--eye-fail);
+      }
+
+      .eye-pass {
+      fill: var(--eye-pass);
+      }
+
+      .eye-running {
+      fill: var(--eye-running);
+      }
+    </style>
+
+    <!-- Herdr source paths, with the body chevron cutout removed. -->
+    <path id="herdr-horn" d="M2794 3710 c-129 -33 -299 -135 -359 -214 -21 -28 -26 -42 -21 -63 9 -38 154 -178 199 -192 32 -11 41 -9 104 23 171 86 354 70 475 -43 150 -138 150 -379 0 -511 -107 -95 -278 -94 -386 2 l-46 40 -11 -29 c-16 -40 -14 -122 4 -164 60 -144 264 -222 452 -174 360 92 559 494 430 868 -36 103 -81 173 -175 267 -71 72 -100 93 -180 132 -52 26 -127 54 -167 62 -96 21 -230 20 -319 -4z"/>
+    <path id="herdr-ear" d="M2183 3695 c-116 -32 -221 -108 -273 -199 -17 -28 -30 -54 -30 -58 0 -4 20 1 45 12 66 28 220 68 294 76 64 7 65 7 137 83 40 41 71 77 69 79 -2 2 -21 8 -42 13 -55 12 -140 10 -200 -6z"/>
+    <path id="herdr-body" d="M2212 3388 c-159 -22 -390 -122 -559 -241 -299 -210 -585 -600 -609 -828 -12 -118 40 -251 125 -318 96 -76 178 -98 426 -116 110 -8 224 -21 254 -29 125 -34 230 -115 272 -211 11 -24 24 -81 30 -127 20 -170 65 -271 166 -374 34 -35 63 -65 63 -67 0 -1 -10 -27 -22 -57 -29 -76 -37 -259 -14 -350 42 -170 158 -318 311 -397 44 -23 98 -46 120 -52 22 -6 45 -14 51 -18 5 -5 15 -48 22 -96 6 -48 14 -92 17 -97 4 -6 415 -10 1131 -10 l1124 0 0 1584 0 1585 -55 -19 c-84 -29 -143 -68 -232 -154 l-83 -78 -54 49 c-111 102 -233 151 -391 160 -113 6 -199 -10 -298 -54 l-60 -27 -26 34 c-37 51 -120 134 -127 128 -3 -4 0 -34 7 -67 17 -89 7 -268 -21 -356 -103 -328 -377 -545 -688 -545 -161 0 -273 41 -373 137 -37 35 -66 75 -85 116 -79 173 -8 407 124 407 44 0 68 -14 117 -66 74 -78 167 -82 238 -9 60 62 72 147 33 231 -42 90 -120 130 -238 122 -50 -4 -85 -14 -131 -37 -89 -45 -122 -52 -176 -40 -92 20 -262 163 -302 253 -11 25 -21 45 -22 45 -1 -1 -30 -6 -65 -11z M2484 2795 c23 -24 28 -52 14 -82 l-13 -28 -141 -3 c-130 -2 -142 -1 -158 17 -23 26 -24 66 -1 91 16 18 32 20 151 20 105 0 136 -3 148 -15z"/>
+    <path id="herdr-underscore" d="M2484 2795 c23 -24 28 -52 14 -82 l-13 -28 -141 -3 c-130 -2 -142 -1 -158 17 -23 26 -24 66 -1 91 16 18 32 20 151 20 105 0 136 -3 148 -15z"/>
+
+    <!-- Exclude only the artificial x=5120 crop edge from the body knockout. -->
+    <clipPath id="body-outline-without-crop-edge">
+      <rect x="-1000" y="-1000" width="6050" height="7200"/>
+    </clipPath>
+  </defs>
+
+  <!-- Continue the two cropped bodies underneath the following sheep. -->
+  <path d="M500 326C534 320 566 324 596 340V512H500Z" fill="var(--ram-fill)"/>
+  <path d="M800 326C834 320 866 324 896 340V512H800Z" fill="var(--ram-fill)"/>
+
+  <!-- Copy 1. -->
+  <g transform="translate(0 512) scale(.1 -.1)">
+    <g class="ram-outline">
+      <use href="#herdr-horn"/>
+      <use href="#herdr-ear"/>
+    </g>
+    <use class="body-outline" href="#herdr-body" clip-path="url(#body-outline-without-crop-edge)"/>
+    <g class="ram-fill">
+      <use href="#herdr-horn"/>
+      <use href="#herdr-ear"/>
+      <use href="#herdr-body"/>
+    </g>
+    <g class="face-detail">
+      <use href="#herdr-underscore"/>
+    </g>
+  </g>
+
+  <!-- Copy 2. -->
+  <g transform="translate(300 0)">
+    <g transform="translate(0 512) scale(.1 -.1)">
+      <g class="ram-outline">
+        <use href="#herdr-horn"/>
+        <use href="#herdr-ear"/>
+      </g>
+      <use class="body-outline" href="#herdr-body" clip-path="url(#body-outline-without-crop-edge)"/>
+      <g class="ram-fill">
+        <use href="#herdr-horn"/>
+        <use href="#herdr-ear"/>
+        <use href="#herdr-body"/>
+      </g>
+      <g class="face-detail">
+        <use href="#herdr-underscore"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Copy 3. -->
+  <g transform="translate(600 0)">
+    <g transform="translate(0 512) scale(.1 -.1)">
+      <g class="ram-outline">
+        <use href="#herdr-horn"/>
+        <use href="#herdr-ear"/>
+      </g>
+      <use class="body-outline" href="#herdr-body" clip-path="url(#body-outline-without-crop-edge)"/>
+      <g class="ram-fill">
+        <use href="#herdr-horn"/>
+        <use href="#herdr-ear"/>
+        <use href="#herdr-body"/>
+      </g>
+      <g class="face-detail">
+        <use href="#herdr-underscore"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Review-state eyes: failing, passing, and running. -->
+  <path class="eye-fail" d="M174.85 227.55L180.55 221.85L191 232L201.45 221.85L207.15 227.55L197.3 238L207.15 248.45L201.45 254.15L191 244L180.55 254.15L174.85 248.45L185.3 238Z"/>
+  <path class="eye-pass" d="M475.962703 239.499398L481.084063 232.173922L492.589629 240.231759L507.225235 219.323055L514.550710 224.444416L494.784389 252.676946Z"/>
+  <circle class="eye-running" cx="795" cy="236" r="15.8"/>
+</svg>
