@@ -47,6 +47,21 @@ pub enum ReviewType {
     Design,
 }
 
+/// The effort a review runs at, which roborev calls a reasoning level.
+///
+/// Only the exact tiers are offered. roborev still accepts its legacy `fast`, `standard`,
+/// `thorough`, and `maximum` presets, whose meaning varies by agent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reasoning {
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
 /// The roborev job fields needed by the reporter and review pane.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewJob {
@@ -136,6 +151,50 @@ impl ReviewType {
             ReviewType::Default => None,
             ReviewType::Security => Some("security"),
             ReviewType::Design => Some("design"),
+        }
+    }
+}
+
+impl Reasoning {
+    /// The next tier in the picker's cycle.
+    pub fn next(self) -> Self {
+        match self {
+            Reasoning::Default => Reasoning::Low,
+            Reasoning::Low => Reasoning::Medium,
+            Reasoning::Medium => Reasoning::High,
+            Reasoning::High => Reasoning::XHigh,
+            Reasoning::XHigh => Reasoning::Max,
+            Reasoning::Max => Reasoning::Default,
+        }
+    }
+
+    /// The name for the picker footer.
+    pub fn label(self) -> &'static str {
+        match self {
+            Reasoning::Default => "default",
+            Reasoning::Low => "low",
+            Reasoning::Medium => "medium",
+            Reasoning::High => "high",
+            Reasoning::XHigh => "xhigh",
+            Reasoning::Max => "max",
+        }
+    }
+
+    /// The value `--reasoning` carries, or `None` when the flag is left off.
+    ///
+    /// Omitting it leaves roborev on the repo's `review_reasoning`, which no tier here can name.
+    ///
+    /// An agent that does not support the named tier is left with no reasoning rather than the
+    /// nearest one it has, so a tier above an agent's ceiling asks for less than the default it
+    /// replaced.
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Reasoning::Default => None,
+            Reasoning::Low => Some("low"),
+            Reasoning::Medium => Some("medium"),
+            Reasoning::High => Some("high"),
+            Reasoning::XHigh => Some("xhigh"),
+            Reasoning::Max => Some("max"),
         }
     }
 }
@@ -255,9 +314,10 @@ pub fn review(
     checkout: &Path,
     selection: &Selection,
     review_type: ReviewType,
+    reasoning: Reasoning,
     agent: Option<&str>,
 ) -> Result<String> {
-    let args = review_args(selection, review_type, agent);
+    let args = review_args(selection, review_type, reasoning, agent);
     let output = exec::run("roborev", &args, Some(checkout))?;
     let reply = match output.stdout.trim() {
         "" => output.stderr.trim(),
@@ -272,6 +332,7 @@ pub fn review(
 fn review_args<'a>(
     selection: &'a Selection,
     review_type: ReviewType,
+    reasoning: Reasoning,
     agent: Option<&'a str>,
 ) -> Vec<&'a str> {
     let mut args = vec!["review"];
@@ -280,6 +341,9 @@ fn review_args<'a>(
     }
     if let Some(review_type) = review_type.flag() {
         args.extend(["--type", review_type]);
+    }
+    if let Some(reasoning) = reasoning.flag() {
+        args.extend(["--reasoning", reasoning]);
     }
     match selection {
         Selection::Dirty => args.push("--dirty"),
@@ -358,8 +422,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::{
-        AGENT_COMMANDS, JobStatus, ReviewJob, ReviewType, Selection, ShownReview, comment_args,
-        newest_reviewed, on_path, review_args,
+        AGENT_COMMANDS, JobStatus, Reasoning, ReviewJob, ReviewType, Selection, ShownReview,
+        comment_args, newest_reviewed, on_path, review_args,
     };
 
     fn parse(json: &str) -> Vec<ReviewJob> {
@@ -444,8 +508,52 @@ mod tests {
                 vec!["review", "--type", "design", "old", "new"],
             ),
         ] {
-            assert_eq!(review_args(selection, review_type, None), want);
+            assert_eq!(
+                review_args(selection, review_type, Reasoning::Default, None),
+                want
+            );
         }
+    }
+
+    /// The default tier omits the flag, since roborev resolves `review_reasoning` per repo and no
+    /// tier name reproduces that.
+    #[test]
+    fn argv_carries_an_exact_reasoning_tier_and_omits_the_default() {
+        let commit = Selection::Commit("abc".to_string());
+        assert_eq!(
+            review_args(&commit, ReviewType::Default, Reasoning::Default, None),
+            vec!["review", "abc"]
+        );
+        assert_eq!(
+            review_args(&commit, ReviewType::Default, Reasoning::XHigh, None),
+            vec!["review", "--reasoning", "xhigh", "abc"]
+        );
+        assert_eq!(
+            review_args(&commit, ReviewType::Security, Reasoning::Max, Some("codex")),
+            vec![
+                "review",
+                "--agent",
+                "codex",
+                "--type",
+                "security",
+                "--reasoning",
+                "max",
+                "abc"
+            ]
+        );
+    }
+
+    /// Every tier roborev names, in order, returning to the default it started from.
+    #[test]
+    fn the_reasoning_cycle_visits_each_exact_tier_once() {
+        let mut tier = Reasoning::Default;
+        let mut labels = Vec::new();
+        for _ in 0..6 {
+            labels.push(tier.label());
+            tier = tier.next();
+        }
+        assert_eq!(labels, ["default", "low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(tier, Reasoning::Default);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
 use crate::git::Commit;
-use crate::roborev::{ReviewType, Selection};
+use crate::roborev::{Reasoning, ReviewType, Selection};
 
 /// What a keypress asks the picker to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,8 @@ pub(crate) struct Picker {
     phase: Phase,
     /// The reviewer prompt every enqueue runs under, cycled by the type key.
     review_type: ReviewType,
+    /// The effort every enqueue runs at, cycled by the reasoning key.
+    reasoning: Reasoning,
 }
 
 /// Commit list state and range selection.
@@ -133,6 +135,7 @@ impl Picker {
             view: View::Commits,
             phase: Phase::Browsing,
             review_type: ReviewType::Default,
+            reasoning: Reasoning::Default,
         }
     }
 
@@ -156,6 +159,10 @@ impl Picker {
             }
             View::Commits if key.code == KeyCode::Char('t') => {
                 self.review_type = self.review_type.next();
+                Action::Handled
+            }
+            View::Commits if key.code == KeyCode::Char('r') => {
+                self.reasoning = self.reasoning.next();
                 Action::Handled
             }
             View::Commits => self.commits.on_key(key),
@@ -193,6 +200,10 @@ impl Picker {
 
     pub(crate) fn review_type(&self) -> ReviewType {
         self.review_type
+    }
+
+    pub(crate) fn reasoning(&self) -> Reasoning {
+        self.reasoning
     }
 
     pub(crate) fn set_enqueuing(&mut self, done: usize, total: usize) {
@@ -575,9 +586,10 @@ impl Picker {
                     None => "v range".to_string(),
                 };
                 format!(
-                    " {selection} {SEPARATOR} a {} {SEPARATOR} t {} {SEPARATOR} enter",
+                    " {selection} {SEPARATOR} a {} {SEPARATOR} t {} {SEPARATOR} r {} {SEPARATOR} enter",
                     self.agents.summary(),
-                    self.review_type.label()
+                    self.review_type.label(),
+                    self.reasoning.label()
                 )
             }
         }
@@ -598,7 +610,7 @@ mod tests {
     use crate::git;
     use crate::git::Commit;
     use crate::git::fixtures::{repo_with_an_interleaved_branch, repo_with_one_commit};
-    use crate::roborev::{ReviewType, Selection};
+    use crate::roborev::{Reasoning, ReviewType, Selection};
 
     /// A fixed "now" so ages render the same on every machine.
     const NOW: i64 = 1_754_006_400;
@@ -784,7 +796,7 @@ mod tests {
             &[
                 "0000000  1d   newest",
                 "Ada",
-                "v range | a codex | t default | enter",
+                "v range | a codex | t default | r default | enter",
                 "!> ",
             ],
         );
@@ -1131,5 +1143,29 @@ mod tests {
 
         press(&mut picker, KeyCode::Char('t'));
         assert_eq!(picker.review_type, ReviewType::Security);
+    }
+
+    #[test]
+    fn the_reasoning_key_cycles_tiers_and_the_footer_follows() {
+        let mut picker = picker();
+        assert_eq!(picker.reasoning(), Reasoning::Default);
+
+        press(&mut picker, KeyCode::Char('r'));
+        assert_eq!(picker.reasoning(), Reasoning::Low);
+        shows(&mut picker, &["t default | r low |"]);
+
+        for _ in 0..5 {
+            press(&mut picker, KeyCode::Char('r'));
+        }
+        assert_eq!(picker.reasoning(), Reasoning::Default);
+    }
+
+    /// The agent list owns its own keys, so a tier cannot be cycled from behind it.
+    #[test]
+    fn the_reasoning_key_does_nothing_while_the_agent_list_is_open() {
+        let mut picker = picker();
+        press(&mut picker, KeyCode::Char('a'));
+        press(&mut picker, KeyCode::Char('r'));
+        assert_eq!(picker.reasoning(), Reasoning::Default);
     }
 }

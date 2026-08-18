@@ -51,6 +51,7 @@ pub fn run(limit: usize) -> Result<()> {
 
     let agents = picker.take_agents();
     let review_type = picker.review_type();
+    let reasoning = picker.reasoning();
     let mut replies = Vec::with_capacity(agents.len());
     let mut enqueued_any = false;
 
@@ -60,7 +61,13 @@ pub fn run(limit: usize) -> Result<()> {
         screen.draw(|frame| picker.render(frame))?;
 
         replies.push(
-            match roborev::review(&checkout, &selection, review_type, agent.as_deref()) {
+            match roborev::review(
+                &checkout,
+                &selection,
+                review_type,
+                reasoning,
+                agent.as_deref(),
+            ) {
                 Ok(reply) if reply.is_empty() => {
                     enqueued_any = true;
                     "queued".to_string()
