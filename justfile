@@ -49,6 +49,10 @@ package:
 restart-reporter:
     # The bracket keeps each pattern from matching the shell running this recipe, whose own argv
     # holds the pattern. Without it pkill signals that shell and the wait loop never ends.
+    # The stream child goes first, by parent pid so a hand-run `roborev stream` is untouched. It
+    # would otherwise outlive the reporter until roborev next broadcasts, and a rebuild leaks one.
+    # A respawn waits a second, so the reporter is gone well before one could start.
+    -pkill -P "$(pgrep -f '{{justfile_directory()}}/bin/[r]oboherd reporter')" 2>/dev/null
     -pkill -f '{{justfile_directory()}}/bin/[r]oboherd reporter'
     # The lock releases on exit, so the replacement waits rather than racing it.
     while pgrep -f '{{justfile_directory()}}/bin/[r]oboherd reporter' >/dev/null; do sleep 0.1; done

@@ -110,6 +110,26 @@ where
     capture(program, args, cwd, Some(timeout), Some(input)).map(|_| ())
 }
 
+/// Spawn a long-lived command whose stdout is read line by line rather than collected.
+///
+/// stderr is inherited, not piped, because nothing here drains it and a full pipe would wedge the
+/// child.
+pub fn spawn_streaming<S>(program: &str, args: &[S]) -> Result<Child>
+where
+    S: AsRef<OsStr>,
+{
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|source| Error::Spawn {
+            program: program.to_string(),
+            source,
+        })
+}
+
 fn execute<S>(
     program: &str,
     args: &[S],
