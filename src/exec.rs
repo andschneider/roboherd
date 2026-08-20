@@ -1,7 +1,7 @@
 //! Every subprocess the plugin runs starts here, with explicit argv and never a shell.
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
@@ -37,7 +37,7 @@ pub fn run_lossy<S>(program: &str, args: &[S], cwd: Option<&Path>) -> Result<Out
 where
     S: AsRef<OsStr>,
 {
-    let (stdout, stderr) = capture(program, args, cwd, None)?;
+    let (stdout, stderr) = capture(program, args, cwd, None, None)?;
     Ok(Output {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
@@ -93,6 +93,23 @@ where
     execute(program, args, cwd, Some(timeout)).map(|_| ())
 }
 
+/// Run a command under a timeout with `input` piped to its stdin, discarding captured output.
+///
+/// For a clipboard tool that reads until EOF, closing stdin (dropping the writer) is what tells it
+/// the input is complete.
+pub fn run_stdin_ok_timed<S>(
+    program: &str,
+    args: &[S],
+    input: &[u8],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> Result<()>
+where
+    S: AsRef<OsStr>,
+{
+    capture(program, args, cwd, Some(timeout), Some(input)).map(|_| ())
+}
+
 fn execute<S>(
     program: &str,
     args: &[S],
@@ -102,7 +119,7 @@ fn execute<S>(
 where
     S: AsRef<OsStr>,
 {
-    let (stdout, stderr) = capture(program, args, cwd, timeout)?;
+    let (stdout, stderr) = capture(program, args, cwd, timeout, None)?;
     Ok(Output {
         stdout: decode(program, stdout)?,
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
@@ -111,11 +128,15 @@ where
 
 /// Run a command to completion, leaving stdout undecoded for the caller to interpret. stderr is
 /// always returned alongside it, since a successful run can still put human-readable status there.
+///
+/// `input`, when given, is piped to stdin and the pipe is closed once it's written, which is what
+/// tells a command reading until EOF (e.g. a clipboard tool) that the input is complete.
 fn capture<S>(
     program: &str,
     args: &[S],
     cwd: Option<&Path>,
     timeout: Option<Duration>,
+    input: Option<&[u8]>,
 ) -> Result<(Vec<u8>, Vec<u8>)>
 where
     S: AsRef<OsStr>,
@@ -123,7 +144,10 @@ where
     let mut command = Command::new(program);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(match input {
+            Some(_) => Stdio::piped(),
+            None => Stdio::null(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -137,6 +161,9 @@ where
     })?;
 
     // A child that fills a pipe buffer blocks until drained, outlasting any timeout enforced here.
+    // Feeding stdin on its own thread guards the same way against a child that only starts reading
+    // once it has produced enough output to fill its own pipe.
+    let stdin_writer = input.map(|bytes| feed(child.stdin.take(), bytes.to_vec()));
     let stdout_reader = drain(child.stdout.take());
     let stderr_reader = drain(child.stderr.take());
 
@@ -177,6 +204,12 @@ where
             },
             stderr: String::from_utf8_lossy(&stderr).trim().to_string(),
         });
+    }
+
+    // A command that exits 0 without draining its stdin (unlikely for a clipboard tool, but not
+    // ruled out) still counts as success; the input write failure would be moot at that point.
+    if let Some(writer) = stdin_writer {
+        join_input(writer, program)?;
     }
 
     Ok((stdout, stderr))
@@ -221,6 +254,29 @@ fn join(reader: JoinHandle<std::io::Result<Vec<u8>>>, program: &str) -> Result<V
         .join()
         .unwrap_or_else(|_| Err(std::io::Error::other("output reader thread panicked")))
         .map_err(|source| Error::CommandOutput {
+            program: program.to_string(),
+            source,
+        })
+}
+
+/// Write `input` to a child pipe on its own thread, then drop it to close the pipe.
+fn feed<W>(pipe: Option<W>, input: Vec<u8>) -> JoinHandle<std::io::Result<()>>
+where
+    W: Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            pipe.write_all(&input)?;
+        }
+        Ok(())
+    })
+}
+
+fn join_input(writer: JoinHandle<std::io::Result<()>>, program: &str) -> Result<()> {
+    writer
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("input writer thread panicked")))
+        .map_err(|source| Error::CommandInput {
             program: program.to_string(),
             source,
         })
@@ -284,7 +340,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{run, run_json_timed, run_lossy, run_timed};
+    use super::{run, run_json_timed, run_lossy, run_stdin_ok_timed, run_timed};
     use crate::error::Error;
 
     #[test]
@@ -391,5 +447,27 @@ mod tests {
         let output = run_timed("echo", &[payload.as_str()], None, Duration::from_secs(30))
             .expect("echo runs");
         assert_eq!(output.stdout.trim().len(), payload.len());
+    }
+
+    #[test]
+    fn stdin_input_larger_than_a_pipe_buffer_does_not_deadlock() {
+        // Mirrors the stdout-direction test above: `cat` echoes the input back, so the reader
+        // thread must drain it concurrently with the writer thread feeding stdin, or both block.
+        let payload = "y".repeat(100 * 1024).into_bytes();
+        run_stdin_ok_timed(
+            "cat",
+            &[] as &[&str],
+            &payload,
+            None,
+            Duration::from_secs(30),
+        )
+        .expect("cat runs");
+    }
+
+    #[test]
+    fn a_failing_command_still_reports_failure_with_stdin_input() {
+        let err = run_stdin_ok_timed("false", &[] as &[&str], b"hi", None, Duration::from_secs(5))
+            .expect_err("false exits non-zero");
+        assert!(matches!(err, Error::CommandFailed { .. }));
     }
 }

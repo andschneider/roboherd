@@ -146,6 +146,7 @@ worth reading: a completed, unclosed, failing one outranks a newer passing one.
 | `r`                                  | Refresh review             |
 | `a`                                  | Close review               |
 | `c`                                  | Comment on review          |
+| `y`                                  | Copy review to clipboard   |
 | `q`, escape, control-C               | Close the pane             |
 
 `c` opens a small editor for the comment:

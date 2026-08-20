@@ -1,5 +1,6 @@
 mod badge;
 mod cli;
+mod clipboard;
 mod commands;
 mod config;
 mod context;

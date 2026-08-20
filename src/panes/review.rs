@@ -23,6 +23,7 @@ pub(crate) enum Action {
     Close,
     SubmitComment(String),
     Show(i64),
+    Copy,
 }
 
 /// Review and editor state kept free of process handles.
@@ -188,6 +189,11 @@ impl ReviewView {
         self.job_id
     }
 
+    /// The displayed review text, exactly as rendered, for the copy-to-clipboard action.
+    pub(crate) fn review_text(&self) -> &str {
+        &self.review
+    }
+
     pub(crate) fn replace_review(&mut self, review: &roborev::ShownReview, notice: String) {
         self.load(review);
         self.notice = Some(notice);
@@ -283,6 +289,7 @@ impl ReviewView {
                 Action::Handled
             }
             KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('y') => Action::Copy,
             KeyCode::Char('a') if self.job_id.is_some() && !self.closed => Action::Close,
             KeyCode::Char('c') if self.job_id.is_some() => {
                 self.mode = Mode::Commenting;
@@ -451,6 +458,7 @@ impl ReviewView {
         if self.job_id.is_some() {
             parts.push("c comment");
         }
+        parts.push("y copy");
         parts.push("q exit");
 
         parts.join(" | ")
@@ -478,9 +486,19 @@ mod tests {
 
         assert_eq!(press(&mut view, KeyCode::Char('q')), Action::Quit);
         assert_eq!(press(&mut view, KeyCode::Char('r')), Action::Refresh);
+        assert_eq!(press(&mut view, KeyCode::Char('y')), Action::Copy);
         assert_eq!(press(&mut view, KeyCode::Char('a')), Action::Close);
         assert_eq!(press(&mut view, KeyCode::Char('c')), Action::Handled);
         assert_eq!(view.mode, Mode::Commenting);
+    }
+
+    /// Copy is not gated on a displayed job, unlike close and comment.
+    #[test]
+    fn copy_works_without_a_job_id() {
+        let mut view = ReviewView::new(None, Vec::new(), "review".to_string(), false);
+
+        assert_eq!(press(&mut view, KeyCode::Char('y')), Action::Copy);
+        assert_eq!(view.review_text(), "review");
     }
 
     /// Jobs run newest first, so `j` walks toward older reviews and `k` toward newer ones.

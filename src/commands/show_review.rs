@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::Event;
 
+use crate::clipboard;
 use crate::commands::open_review::JOB_ENV;
 use crate::context::Context;
 use crate::error::Result;
@@ -62,6 +63,7 @@ pub fn run() -> Result<()> {
             Action::Close => close_review(&checkout, &mut view),
             Action::SubmitComment(message) => submit_comment(&checkout, &mut view, &message),
             Action::Show(job_id) => show_job(&checkout, &mut view, job_id),
+            Action::Copy => copy_review(&mut view),
         }
     }
 }
@@ -134,6 +136,14 @@ fn submit_comment(checkout: &Path, view: &mut ReviewView, message: &str) {
     match fetch_review(checkout, Some(job_id)) {
         Ok(review) => view.replace_review(&review, "comment added".to_string()),
         Err(err) => view.set_notice(format!("comment added; refresh failed: {err}")),
+    }
+}
+
+/// Copy the displayed review text to the clipboard.
+fn copy_review(view: &mut ReviewView) {
+    match clipboard::copy(view.review_text()) {
+        Ok(()) => view.set_notice("review copied".to_string()),
+        Err(err) => view.set_notice(format!("copy failed: {err}")),
     }
 }
 
