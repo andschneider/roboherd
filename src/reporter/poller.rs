@@ -11,6 +11,7 @@ use crate::badge::Badge;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::herdr;
+use crate::reporter::stream;
 use crate::reporter::transitions::{Event, TransitionTracker, summarize};
 use crate::roborev;
 use crate::wake::{self, Marker};
@@ -64,6 +65,9 @@ pub fn run(once: bool, verbose: bool) -> Result<()> {
         }
         return Ok(());
     }
+
+    // Started after the lock, so only the reporter that won it holds a stream child.
+    stream::watch();
 
     let mut next_full_pass = Instant::now();
     let mut last_wake = observed_time(wake::observe());

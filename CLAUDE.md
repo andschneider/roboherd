@@ -29,7 +29,10 @@ doc comments beside the code it constrains.
 - **A range is git's answer, not the picker's.** Do not infer ancestry from row order, and do not
   "fix" the range check by listing with `--first-parent`, which would hide every commit merged in
   from a branch.
-- **Poll, do not subscribe.** No SSE, no reconnect backoff, no event subscriptions in v1.
+- **Poll is the source of truth; `roborev stream` is only a wake hint.** The reporter's poll loop
+  is what publishes state, so a dropped or delayed stream line costs latency and nothing else. No
+  SSE client, no daemon subscription, and no reconnect backoff beyond respawning the stream child
+  on the reporter's own tick.
 - **One reporter for all workspaces**, launched from `[[startup]]`. Not one watcher per workspace,
   and not from event hooks.
 - **Workspace metadata only.** Never call `herdr pane report-agent` or otherwise participate in
