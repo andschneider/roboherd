@@ -88,13 +88,14 @@ ones. A count at zero drops out, so the row disappears when nothing is outstandi
 ## Starting a review
 
 `review-commit` opens a popup listing the most recent commits. Select one or more commits and then
-change the reviewer agent or review type.
+change the reviewer agent, review type, or reasoning tier.
 
 | Key                                           | Does                                             |
 |-----------------------------------------------|--------------------------------------------------|
 | arrows, `j`/`k`, PgUp/PgDn, Home/`g`, End/`G` | Move                                             |
 | `v`, space                                    | Mark one end of a range, the cursor is the other |
 | `t`                                           | Cycle the review type                            |
+| `r`                                           | Cycle the reasoning tier                         |
 | `a`                                           | Choose agents                                    |
 | enter                                         | Start                                            |
 | escape                                        | Clear a marked range, else close the popup       |
@@ -103,7 +104,7 @@ change the reviewer agent or review type.
 When the working tree is dirty, a `dirty` row sits above the log with a count of changed files.
 Selecting it reviews the uncommitted work, including staged, unstaged, and untracked files.
 
-### Choosing agents and review type
+### Choosing agents, review type, and reasoning
 
 #### Agents
 
@@ -133,6 +134,15 @@ agent overrides. An empty selection hands the choice back to roborev the same wa
 - `design` - for commits carrying design docs such as PRDs, task lists, and architecture proposals.
   Flags internal contradictions first, then completeness, feasibility against the actual codebase,
   and whether the task stages are ordered and small enough to review.
+
+#### Reasoning
+
+`r` cycles the effort a review runs at: `default`, `low`, `medium`, `high`, `xhigh`, `max`.
+
+`default` omits the flag, leaving roborev on the repo's own `review_reasoning`. The rest are
+roborev's exact tiers, requested by name. An agent that does not support the tier named is left with
+no reasoning at all rather than the nearest one it has, so a tier above an agent's ceiling asks for
+less than the default it replaced.
 
 ## Reading a review
 
