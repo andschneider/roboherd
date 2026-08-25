@@ -5,6 +5,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
+use ratatui::text::Span;
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
 use crate::git::Commit;
@@ -60,8 +61,8 @@ struct CommitPicker {
     /// How many paths carry uncommitted changes, or `None` for a clean tree. `Some` pins a row
     /// above the log that reviews the working tree rather than any commit.
     dirty: Option<usize>,
-    /// The checked-out branch, empty on a detached HEAD. The footer names it while the dirty row is
-    /// selected, since a worktree is the reason to be reviewing uncommitted changes at all.
+    /// The checked-out branch, empty on a detached HEAD. The browsing footer keeps it visible so
+    /// worktrees with similar histories are distinguishable.
     branch: String,
     /// Index of the highlighted row, counting the dirty row when there is one.
     cursor: usize,
@@ -91,6 +92,37 @@ struct AgentPicker {
 
 /// How far the page keys jump.
 const PAGE: usize = 10;
+
+/// Most terminal columns the footer gives to a branch name.
+const MAX_BRANCH_COLUMNS: usize = 30;
+
+/// Measure text as terminal columns rather than bytes or scalar values.
+fn display_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+/// Fit text into terminal columns, reserving the final column for an ellipsis when truncated.
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if display_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    const ELLIPSIS: &str = "…";
+    let content_width = max_width.saturating_sub(display_width(ELLIPSIS));
+    let mut end = 0;
+    for (index, character) in text.char_indices() {
+        let next = index + character.len_utf8();
+        if display_width(&text[..next]) > content_width {
+            break;
+        }
+        end = next;
+    }
+    let prefix = &text[..end];
+    format!("{prefix}{ELLIPSIS}")
+}
 
 /// A commit's age in exactly four columns: the count, its unit letter, then padding, as in `12h `
 /// or `3d  `.
@@ -545,7 +577,10 @@ impl Picker {
         // Replies replace the lists because several results will not fit in the footer.
         if let Phase::Reported(replies) = &self.phase {
             frame.render_widget(Paragraph::new(replies.join("\n")), body);
-            frame.render_widget(Paragraph::new(self.status()).dim(), footer);
+            frame.render_widget(
+                Paragraph::new(self.status(footer.width.into())).dim(),
+                footer,
+            );
             return;
         }
 
@@ -553,12 +588,15 @@ impl Picker {
             View::Commits => self.commits.render(frame, body),
             View::Agents => self.agents.render(frame, body),
         }
-        frame.render_widget(Paragraph::new(self.status()).dim(), footer);
+        frame.render_widget(
+            Paragraph::new(self.status(footer.width.into())).dim(),
+            footer,
+        );
     }
 
     /// The footer line: key hints while browsing, progress while enqueuing, a dismissal prompt once
     /// roborev has replied.
-    fn status(&self) -> String {
+    fn status(&self, width: usize) -> String {
         const SEPARATOR: char = '|';
         match &self.phase {
             Phase::Refused(reason) => reason.clone(),
@@ -567,32 +605,55 @@ impl Picker {
                 1 => "press any key to close".to_string(),
                 count => format!("{count} results {SEPARATOR} press any key to close"),
             },
-            Phase::Browsing if self.view == View::Agents => {
-                format!(" esc {SEPARATOR} space toggles {SEPARATOR} enter")
-            }
-            Phase::Browsing if self.commits.rows() == 0 => {
-                format!("nothing to review in this checkout {SEPARATOR} q to close")
-            }
+            Phase::Browsing if self.view == View::Agents => self.browsing_status(
+                &format!("esc {SEPARATOR} space toggles {SEPARATOR} enter"),
+                width,
+            ),
+            Phase::Browsing if self.commits.rows() == 0 => self.browsing_status(
+                &format!("nothing to review in this checkout {SEPARATOR} q to close"),
+                width,
+            ),
             Phase::Browsing => {
                 let marked = self.commits.marked();
                 let span = marked.end() - marked.start() + 1;
                 let selection = match self.commits.anchor {
-                    Some(_) => format!("{span} commits marked {SEPARATOR} esc clears"),
+                    Some(_) => Some(format!("{span} commits marked {SEPARATOR} esc clears")),
                     // The working tree is reviewed alone, so a range key would do nothing here.
-                    // The row already says what is selected, leaving the footer to say where.
-                    None if self.commits.commit_at(self.commits.cursor).is_none() => {
-                        self.commits.branch_label().to_string()
-                    }
-                    None => "v range".to_string(),
+                    // Its row already says what is selected, so no selection hint is needed.
+                    None if self.commits.commit_at(self.commits.cursor).is_none() => None,
+                    None => Some("v range".to_string()),
                 };
-                format!(
-                    " {selection} {SEPARATOR} a {} {SEPARATOR} t {} {SEPARATOR} r {} {SEPARATOR} enter",
+                let actions = format!(
+                    "a {} {SEPARATOR} t {} {SEPARATOR} r {} {SEPARATOR} enter",
                     self.agents.summary(),
                     self.review_type.label(),
                     self.reasoning.label()
-                )
+                );
+                let details = match selection {
+                    Some(selection) => format!("{selection} {SEPARATOR} {actions}"),
+                    None => actions,
+                };
+                self.browsing_status(&details, width)
             }
         }
+    }
+
+    /// Prefix browsing details with as much of the branch as fits without clipping the details.
+    fn browsing_status(&self, details: &str, width: usize) -> String {
+        const BRANCH_FRAME: &str = " [b: ] | ";
+        let branch_width = width
+            .saturating_sub(display_width(BRANCH_FRAME) + display_width(details))
+            .min(MAX_BRANCH_COLUMNS);
+        if branch_width == 0 {
+            return if display_width(details) < width {
+                format!(" {details}")
+            } else {
+                details.to_string()
+            };
+        }
+
+        let branch = truncate_to_width(self.commits.branch_label(), branch_width);
+        format!(" [b: {branch}] | {details}")
     }
 }
 
@@ -605,7 +666,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Modifier;
 
-    use super::{Action, Phase, Picker, View, age};
+    use super::{Action, Phase, Picker, View, age, display_width, truncate_to_width};
     use crate::commands::pick_commit::refusal;
     use crate::git;
     use crate::git::Commit;
@@ -796,10 +857,69 @@ mod tests {
             &[
                 "0000000  1d   newest",
                 "Ada",
-                "v range | a codex | t default | r default | enter",
+                "[b: main] | v range | a codex | t default | r default | enter",
                 "!> ",
             ],
         );
+    }
+
+    #[test]
+    fn the_worktree_branch_stays_visible_while_browsing() {
+        let mut picker = picker();
+        picker.commits.branch = "feature/wt".to_string();
+        shows(&mut picker, &["[b: feature/wt] | v range"]);
+    }
+
+    #[test]
+    fn the_branch_yields_to_key_hints_once_a_range_is_marked() {
+        // At popup width, the reasoning tier hint leaves no spare columns once a range is marked,
+        // so the branch drops entirely rather than clipping the hints that follow it.
+        let mut picker = picker();
+        picker.commits.branch = "feature/wt".to_string();
+
+        press(&mut picker, KeyCode::Char('v'));
+        press(&mut picker, KeyCode::End);
+        let status = picker.status(TEST_WIDTH.into());
+        assert!(display_width(&status) <= TEST_WIDTH.into());
+        assert!(!status.contains("[b:"), "{status:?}");
+        assert!(status.starts_with(" 3 commits marked"), "{status:?}");
+        assert!(status.ends_with("| enter"), "{status:?}");
+    }
+
+    #[test]
+    fn a_long_branch_is_capped_before_the_key_hints() {
+        let mut picker = picker();
+        let branch = "feature/a-branch-name-that-will-not-fit-in-the-footer";
+        picker.commits.branch = branch.to_string();
+
+        let status = picker.status(TEST_WIDTH.into());
+        assert!(display_width(&status) <= TEST_WIDTH.into());
+        assert!(status.contains("…] | v range"), "{status:?}");
+        assert!(status.ends_with("| enter"), "{status:?}");
+        assert!(!status.contains(branch), "{status:?}");
+    }
+
+    #[test]
+    fn the_leading_space_never_pushes_details_past_the_footer_width() {
+        // A footer exactly as wide as the details leaves no room for the branch or its own
+        // leading space; one column narrower than that would clip the trailing key hint.
+        let picker = picker();
+        let details = "v range | a codex | t default | r default | enter";
+        let width = display_width(details);
+
+        let exact = picker.browsing_status(details, width);
+        assert_eq!(exact, details);
+
+        let with_slack = picker.browsing_status(details, width + 1);
+        assert_eq!(with_slack, format!(" {details}"));
+    }
+
+    #[test]
+    fn branch_truncation_uses_terminal_width_and_keeps_unicode_valid() {
+        assert_eq!(truncate_to_width("short", 30), "short");
+        assert_eq!(truncate_to_width("功能/branch", 5), "功能…");
+        assert_eq!(display_width(&truncate_to_width("功能/branch", 5)), 5);
+        assert_eq!(truncate_to_width("branch", 0), "");
     }
 
     #[test]
@@ -1011,7 +1131,7 @@ mod tests {
             &[
                 "[X] codex (default)",
                 "[ ] claude-code",
-                "esc | space toggles | enter",
+                "[b: main] | esc | space toggles | enter",
                 "!> ",
             ],
         );
@@ -1119,12 +1239,16 @@ mod tests {
         // The row says what is selected, so the footer says which working tree it belongs to.
         shows(
             &mut picker,
-            &["dirty", "uncommitted changes (3 files)", " main | a codex"],
+            &[
+                "dirty",
+                "uncommitted changes (3 files)",
+                "[b: main] | a codex",
+            ],
         );
         assert_eq!(commit(&picker), Some(Selection::Dirty));
 
         picker.commits.branch = String::new();
-        shows(&mut picker, &["detached | a codex"]);
+        shows(&mut picker, &["[b: detached] | a codex"]);
 
         // `START^..END` is defined between commits, so the mark key does nothing here.
         assert_eq!(press(&mut picker, KeyCode::Char('v')), Action::Handled);

@@ -12,8 +12,8 @@ const CONTEXT_ENV: &str = "HERDR_PLUGIN_CONTEXT_JSON";
 /// How long [`Context::existing_checkout`] gets to resolve the repo root.
 const ROOT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Git checkout provenance for a workspace opened from a worktree. Only the checkout path matters
-/// here, since roborev normalizes worktrees to their main checkout itself.
+/// Git checkout provenance for a workspace opened from a worktree. The checkout path keeps git
+/// commands on the worktree's branch even when the workspace cwd names the main checkout.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Worktree {
     #[serde(default)]
@@ -47,15 +47,13 @@ impl Context {
         serde_json::from_str(raw).map_err(|source| Error::ContextJson { source })
     }
 
-    /// The checkout that roborev and git commands should run in. Pane, action, and startup commands
-    /// all inherit the plugin directory as cwd, so the target checkout comes from context instead.
+    /// The checkout that roborev and git commands should run in. A worktree path is authoritative,
+    /// then an ordinary workspace falls back to its cwd.
     pub fn checkout(&self) -> PathBuf {
-        non_empty(self.workspace_cwd.as_deref())
-            .or_else(|| {
-                self.worktree
-                    .as_ref()
-                    .and_then(|w| non_empty(Some(&w.checkout_path)))
-            })
+        self.worktree
+            .as_ref()
+            .and_then(|w| non_empty(Some(&w.checkout_path)))
+            .or_else(|| non_empty(self.workspace_cwd.as_deref()))
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."))
     }
@@ -94,10 +92,15 @@ pub fn herdr_bin() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
-    use super::Context;
-    use crate::git::fixtures::repo_with_one_commit;
+    use super::{Context, Worktree};
+    use crate::git;
+    use crate::git::fixtures::{git as run_git, repo_with_one_commit};
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
 
     fn context_at(path: &std::path::Path) -> Context {
         Context {
@@ -134,23 +137,49 @@ mod tests {
     }
 
     #[test]
-    fn workspace_cwd_wins_over_worktree() {
+    fn worktree_checkout_wins_over_workspace_cwd() {
         let ctx = Context::parse(
             r#"{"workspace_cwd":"/a","worktree":{"checkout_path":"/b","repo_name":"r",
                 "repo_root":"/b","is_linked_worktree":true}}"#,
         )
         .expect("valid context");
-        assert_eq!(ctx.checkout().to_str(), Some("/a"));
+        assert_eq!(ctx.checkout().to_str(), Some("/b"));
     }
 
     #[test]
-    fn falls_back_to_worktree_checkout_path() {
+    fn worktree_checkout_keeps_git_on_its_branch() {
+        let repo = repo_with_one_commit();
+        let parent = TempDir::new().expect("tempdir");
+        let linked = parent.path().join("linked");
+        run_git(
+            repo.path(),
+            &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+            None,
+        );
+        let ctx = Context {
+            workspace_cwd: Some(repo.path().display().to_string()),
+            worktree: Some(Worktree {
+                checkout_path: linked.display().to_string(),
+            }),
+            ..Context::default()
+        };
+
+        let checkout = ctx.existing_checkout().expect("checkout resolves");
+        assert_eq!(
+            checkout,
+            linked.canonicalize().expect("canonical worktree path")
+        );
+        assert_eq!(git::current_branch(&checkout, TIMEOUT).unwrap(), "feature");
+    }
+
+    #[test]
+    fn blank_worktree_checkout_falls_back_to_workspace_cwd() {
         let ctx = Context::parse(
-            r#"{"worktree":{"checkout_path":"/b","repo_name":"r","repo_root":"/b",
-                "is_linked_worktree":true}}"#,
+            r#"{"workspace_cwd":"/a","worktree":{"checkout_path":"   ","repo_name":"r",
+                "repo_root":"/b","is_linked_worktree":true}}"#,
         )
         .expect("valid context");
-        assert_eq!(ctx.checkout().to_str(), Some("/b"));
+        assert_eq!(ctx.checkout().to_str(), Some("/a"));
     }
 
     #[test]
