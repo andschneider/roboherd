@@ -1,7 +1,7 @@
 id = "roboherd"
 name = "Roborev"
-version = "0.1.0"
-description = "Ambient roborev review status in the herdr sidebar, plus a commit review launcher"
+version = "0.2.0"
+description = "Inspect roborev reviews, launch new ones, and get notified when they finish"
 min_herdr_version = "0.7.5"
 platforms = ["macos", "linux"]
 

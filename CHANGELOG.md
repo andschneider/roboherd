@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-24
+
+### Added
+
+- Copy the current review to the clipboard with `y` in the quick view pane.
+- Cycle the reasoning tier from the commit picker with `r`, requesting one of roborev's tiers by
+  name when starting a review.
+
+### Changed
+
+- The reporter now wakes on `roborev stream` output in addition to its poll loop, lowering update
+  latency without changing poll as the source of truth.
+
+### Fixed
+
+- Fixed review status and the commit picker's range handling inside git worktrees.
+
 ## [0.1.0] - 2026-08-10
 
 ### Added
