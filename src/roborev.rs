@@ -7,6 +7,10 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::exec;
+use crate::git;
+
+/// How long the TUI launch gets to resolve the checkout's branch.
+const TUI_BRANCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Lifecycle state of a roborev review job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -413,21 +417,63 @@ pub fn default_agent(checkout: &Path) -> Option<String> {
 /// Run the roborev TUI scoped to the checkout's repo and branch. The TUI owns the terminal, so its
 /// stdio is inherited rather than captured.
 pub fn tui(checkout: &Path) -> Result<()> {
-    exec::run_interactive("roborev", &["tui", "--repo", "--branch"], Some(checkout))
+    // A failed lookup leaves checkout validation to Roborev inside the inherited terminal.
+    let branch = git::current_branch(checkout, TUI_BRANCH_TIMEOUT).ok();
+    let args = tui_args(checkout, branch.as_deref());
+    exec::run_interactive("roborev", &args, Some(checkout))
+}
+
+/// Build explicit worktree filters, or valueless filters when Git could not resolve the branch.
+fn tui_args(checkout: &Path, branch: Option<&str>) -> Vec<String> {
+    let Some(branch) = branch else {
+        return ["tui", "--repo", "--branch"].map(str::to_string).to_vec();
+    };
+    let branch = if branch.is_empty() { "HEAD" } else { branch };
+    // Roborev's optional-value filters require `=` when they carry explicit values.
+    vec![
+        "tui".to_string(),
+        format!("--repo={}", checkout.display()),
+        format!("--branch={branch}"),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use super::{
         AGENT_COMMANDS, JobStatus, Reasoning, ReviewJob, ReviewType, Selection, ShownReview,
-        comment_args, newest_reviewed, on_path, review_args,
+        comment_args, newest_reviewed, on_path, review_args, tui_args,
     };
 
     fn parse(json: &str) -> Vec<ReviewJob> {
         serde_json::from_str(json).expect("valid job array")
+    }
+
+    #[test]
+    fn tui_filters_are_resolved_before_launch() {
+        assert_eq!(
+            tui_args(Path::new("/repo/worktree"), Some("feature/picker")),
+            vec![
+                "tui".to_string(),
+                "--repo=/repo/worktree".to_string(),
+                "--branch=feature/picker".to_string(),
+            ]
+        );
+        assert_eq!(
+            tui_args(Path::new("/repo/worktree"), Some(""))[2],
+            "--branch=HEAD"
+        );
+    }
+
+    #[test]
+    fn tui_falls_back_to_roborev_resolution_when_git_cannot_find_a_branch() {
+        assert_eq!(
+            tui_args(Path::new("/not/a/repo"), None),
+            ["tui", "--repo", "--branch"]
+        );
     }
 
     #[test]
