@@ -23,6 +23,7 @@ pub(crate) enum Action {
     Close,
     SubmitComment(String),
     Show(i64),
+    Copy,
 }
 
 /// Review and editor state kept free of process handles.
@@ -188,6 +189,11 @@ impl ReviewView {
         self.job_id
     }
 
+    /// The displayed review text, exactly as rendered, for the copy-to-clipboard action.
+    pub(crate) fn review_text(&self) -> &str {
+        &self.review
+    }
+
     pub(crate) fn replace_review(&mut self, review: &roborev::ShownReview, notice: String) {
         self.load(review);
         self.notice = Some(notice);
@@ -283,6 +289,7 @@ impl ReviewView {
                 Action::Handled
             }
             KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('y') => Action::Copy,
             KeyCode::Char('a') if self.job_id.is_some() && !self.closed => Action::Close,
             KeyCode::Char('c') if self.job_id.is_some() => {
                 self.mode = Mode::Commenting;
@@ -380,14 +387,31 @@ impl ReviewView {
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame) {
-        let [body, footer] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+        // A notice gets its own line above the key hints, but only when one is showing, so it
+        // never steals a row from the body on an ordinary frame.
+        let notice = self.notice.clone();
+        let areas = match notice {
+            Some(_) => Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(frame.area()),
+            None => {
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame.area())
+            }
+        };
+        let body = areas[0];
 
         match self.mode {
             Mode::Reading => self.render_review(frame, body),
             Mode::Commenting => self.render_comment(frame, body),
         }
-        frame.render_widget(Paragraph::new(self.footer()).dim(), footer);
+
+        frame.render_widget(Paragraph::new(self.footer()).dim(), areas[areas.len() - 1]);
+        if let Some(notice) = notice {
+            frame.render_widget(Paragraph::new(notice).dim(), areas[1]);
+        }
     }
 
     fn render_review(&mut self, frame: &mut Frame, body: Rect) {
@@ -418,20 +442,15 @@ impl ReviewView {
         frame.render_widget(paragraph.scroll((scroll, 0)), body);
     }
 
-    /// A notice leads the line rather than replacing it, so the keys stay visible while it shows.
+    /// The key hints line. A notice, when set, renders on its own line above this one.
     fn footer(&self) -> String {
-        let rest = match self.mode {
+        match self.mode {
             Mode::Reading => self.reading_footer(),
             Mode::Commenting => format!(
                 "{}/{} bytes | ctrl+j newline | enter submit | esc cancel",
                 self.draft.len(),
                 COMMENT_LIMIT
             ),
-        };
-
-        match &self.notice {
-            Some(notice) => format!("{notice} | {rest}"),
-            None => rest,
         }
     }
 
@@ -451,6 +470,7 @@ impl ReviewView {
         if self.job_id.is_some() {
             parts.push("c comment");
         }
+        parts.push("y copy");
         parts.push("q exit");
 
         parts.join(" | ")
@@ -478,9 +498,19 @@ mod tests {
 
         assert_eq!(press(&mut view, KeyCode::Char('q')), Action::Quit);
         assert_eq!(press(&mut view, KeyCode::Char('r')), Action::Refresh);
+        assert_eq!(press(&mut view, KeyCode::Char('y')), Action::Copy);
         assert_eq!(press(&mut view, KeyCode::Char('a')), Action::Close);
         assert_eq!(press(&mut view, KeyCode::Char('c')), Action::Handled);
         assert_eq!(view.mode, Mode::Commenting);
+    }
+
+    /// Copy is not gated on a displayed job, unlike close and comment.
+    #[test]
+    fn copy_works_without_a_job_id() {
+        let mut view = ReviewView::new(None, Vec::new(), "review".to_string(), false);
+
+        assert_eq!(press(&mut view, KeyCode::Char('y')), Action::Copy);
+        assert_eq!(view.review_text(), "review");
     }
 
     /// Jobs run newest first, so `j` walks toward older reviews and `k` toward newer ones.
@@ -498,10 +528,8 @@ mod tests {
         assert_eq!(press(&mut oldest, KeyCode::Char('j')), Action::Handled);
         assert_eq!(oldest.notice.as_deref(), Some("oldest review"));
 
-        // The edge notice leads the line without displacing the keys.
-        let footer = oldest.footer();
-        assert!(footer.starts_with("oldest review | "), "{footer}");
-        assert!(footer.contains("q exit"), "{footer}");
+        // The notice sits on its own line, so the key hints stay unchanged while it shows.
+        assert!(oldest.footer().contains("q exit"), "{}", oldest.footer());
     }
 
     /// The title already names the job, so the footer stays worth reading while stepping.
@@ -631,6 +659,33 @@ mod tests {
         assert_eq!(view.scroll, 1);
         assert!(!frame.contains("comment added"), "{frame:?}");
         assert!(frame.contains("a close"), "{frame:?}");
+    }
+
+    #[test]
+    fn a_notice_renders_on_its_own_line_above_the_key_hints() {
+        let mut view = ReviewView::new(Some(42), Vec::new(), "review".to_string(), false);
+        view.set_notice("review copied".to_string());
+        let key_hints = view.footer();
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).expect("test terminal");
+        terminal.draw(|frame| view.render(frame)).expect("render");
+
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let row = |n: usize| -> String {
+            buffer.content()[n * width..(n + 1) * width]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        };
+        let last_row = row(buffer.area.height as usize - 1);
+        let notice_row = row(buffer.area.height as usize - 2);
+
+        assert!(
+            notice_row.trim_end().starts_with("review copied"),
+            "{notice_row:?}"
+        );
+        assert!(!last_row.contains("review copied"), "{last_row:?}");
+        assert!(last_row.trim_end() == key_hints, "{last_row:?}");
     }
 
     #[test]

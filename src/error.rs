@@ -30,6 +30,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("failed to write {program} input: {source}")]
+    CommandInput {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("{program} did not finish within {seconds}s")]
     CommandTimeout { program: String, seconds: u64 },
 
