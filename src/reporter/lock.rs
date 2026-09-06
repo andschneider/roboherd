@@ -1,4 +1,5 @@
 use std::fs::{File, OpenOptions, TryLockError};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,11 +59,14 @@ pub fn claim(notify_timeout: Duration) -> Result<File> {
 }
 
 /// Return the lock when no reporter holds it.
+///
+/// The mode is explicit because the CLI commands that claim the lock never set a creation mask.
 pub fn try_claim(path: &Path) -> Result<Option<File>> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
+        .mode(0o600)
         .open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),

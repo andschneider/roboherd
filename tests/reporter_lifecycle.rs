@@ -283,6 +283,30 @@ fn queued_clients_are_answered_together_after_slow_reconciliation() {
 }
 
 #[test]
+fn start_reporter_creates_a_private_log_and_lock() {
+    use std::os::unix::process::CommandExt;
+
+    let session = Session::new();
+    let mut command = session.command("start-reporter");
+    // SAFETY: umask is async-signal-safe and touches no Rust shared state.
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::umask(rustix::fs::Mode::empty());
+            Ok(())
+        });
+    }
+    success(command.output().unwrap());
+    for name in ["roboherd-reporter.log", "roboherd-reporter.lock"] {
+        let mode = fs::metadata(session.dir.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "{name} permits group or other access");
+    }
+    success(session.run("stop-reporter"));
+}
+
+#[test]
 fn reporter_uses_private_modes_with_a_permissive_parent_umask() {
     use std::os::unix::process::CommandExt;
 

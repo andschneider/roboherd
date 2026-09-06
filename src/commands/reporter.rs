@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -46,9 +47,11 @@ pub fn start() -> Result<()> {
 
 /// Detach a reporter with a private startup pipe and output redirected to its log.
 fn spawn_reporter(log_path: &Path) -> Result<Child> {
+    // Created here, before the reporter it spawns can apply its own creation mask.
     let log = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(log_path)?;
     let mut command = Command::new(std::env::current_exe()?);
     command
