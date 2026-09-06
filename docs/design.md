@@ -8,16 +8,31 @@ instead, where it is far likelier to be updated with the code.
 
 ## Shape
 
-One reporter process, launched from `[[startup]]`, polls roborev for every open workspace and
-publishes its sidebar tokens with a TTL a few intervals long. A `roborev stream` child touches the
-wake marker on every line, cutting a finished review's wait from the poll interval to about a
-second. Panes and popups are separate short-lived processes that herdr spawns per invocation.
+One reporter process per herdr session, launched from `[[startup]]`, polls roborev for every open
+workspace in that session and publishes its sidebar tokens with a TTL a few intervals long. A
+`roborev stream` child touches the wake marker on every line, cutting a finished review's wait from
+the poll interval to about a second. Panes and popups are separate short-lived processes that herdr
+spawns per invocation.
 
 Nothing shares process-local state between them. The pane listing and roborev's own job list are the
 source of truth, so there is no internal cache to invalidate. Events carry no state, so a dropped
 line costs latency and nothing else. If the reporter dies, its last published metadata remains until
 the TTL expires. Everything reaching roborev or git goes through the CLI, run from the resolved
 checkout.
+
+## Reporter lifecycle
+
+A session-scoped file lock enforces one reporter. Its private Unix socket handles readiness and
+shutdown without trusting stored PIDs. Only the lock holder may replace a stale socket.
+
+Startup succeeds after a readiness reply. Until then, a private pipe ties the reporter to its
+spawning CLI: closing it without confirmation triggers graceful cleanup. Shutdown acknowledges only
+after releasing the stream child, socket, and lock.
+
+Control requests are drained before each reconciliation. Stream reconnects also run on this loop, so
+a slow pass delays both. This keeps lifecycle management in one place, while polling remains the
+source of truth. See [the lifecycle commands](../src/commands/reporter.rs) and
+[reporter loop](../src/reporter/poller.rs) for the implementation.
 
 ## External constraints
 
@@ -51,7 +66,8 @@ and they hold no matter how roboherd is structured.
 ## Deliberately absent
 
 No SSE client or daemon subscription. `roborev stream` is a CLI subcommand run as a child, so
-reconnecting is a spawn and backoff is the tick the reporter already runs.
+reconnecting is a spawn with a capped backoff checked on the reporter's existing tick. The local
+control socket manages roboherd itself and never connects directly to the roborev daemon.
 
 No per-workspace watcher, because one process holding one lock and iterating needs no lifecycle
 management as workspaces open and close.

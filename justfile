@@ -1,8 +1,5 @@
 # roboherd task runner
 
-# Where a hand-restarted reporter writes, since only herdr's own startup captures its output.
-reporter-log := "/tmp/roboherd-reporter.log"
-
 # Run fmt, clippy, and tests
 default: lint test
 
@@ -44,20 +41,13 @@ package:
     rm -f bin/roboherd
     cp target/release/roboherd bin/roboherd
 
-# Herdr runs [[startup]] only at server start, so a killed reporter is never respawned.
-# Replace the running reporter with the staged binary, logging to reporter-log
-restart-reporter:
-    # The bracket keeps each pattern from matching the shell running this recipe, whose own argv
-    # holds the pattern. Without it pkill signals that shell and the wait loop never ends.
-    # The stream child goes first, by parent pid so a hand-run `roborev stream` is untouched. It
-    # would otherwise outlive the reporter until roborev next broadcasts, and a rebuild leaks one.
-    # A respawn waits a second, so the reporter is gone well before one could start.
-    -pkill -P "$(pgrep -f '{{justfile_directory()}}/bin/[r]oboherd reporter')" 2>/dev/null
-    -pkill -f '{{justfile_directory()}}/bin/[r]oboherd reporter'
-    # The lock releases on exit, so the replacement waits rather than racing it.
-    while pgrep -f '{{justfile_directory()}}/bin/[r]oboherd reporter' >/dev/null; do sleep 0.1; done
-    nohup {{justfile_directory()}}/bin/roboherd reporter >>{{reporter-log}} 2>&1 &
-    sleep 0.3
-    @pgrep -f '{{justfile_directory()}}/bin/[r]oboherd reporter' >/dev/null \
-        && echo "reporter restarted, logging to {{reporter-log}}" \
-        || { echo "reporter failed to start, see {{reporter-log}}"; exit 1; }
+# Herdr runs [[startup]] only at server start, so a killed reporter is never respawned, and each
+# session locks its own reporter beside its own socket. Run stop-reporter then start-reporter from
+# inside the session whose reporter you want to bounce -- HERDR_SOCKET_PATH in that pane's own
+# environment is what scopes both to that session.
+stop-reporter:
+    {{justfile_directory()}}/bin/roboherd stop-reporter
+
+# Start this session's reporter and wait for readiness.
+start-reporter:
+    {{justfile_directory()}}/bin/roboherd start-reporter
