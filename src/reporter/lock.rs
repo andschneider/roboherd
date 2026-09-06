@@ -1,4 +1,4 @@
-use std::fs::{File, TryLockError};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ const SOCKET_PATH_ENV: &str = "HERDR_SOCKET_PATH";
 /// Scoped to the session's socket directory rather than the uid, so two sessions each get their
 /// own reporter instead of one starving the other. Falls back to the uid-scoped `/tmp` path when
 /// run outside a herdr-launched context.
-fn lock_path() -> PathBuf {
+pub fn lock_path() -> PathBuf {
     if let Some(dir) = socket_dir(std::env::var(SOCKET_PATH_ENV).ok().as_deref()) {
         return dir.join("roboherd-reporter.lock");
     }
@@ -27,24 +27,26 @@ fn lock_path() -> PathBuf {
 /// The directory holding this session's control socket, when herdr set one.
 ///
 /// Takes the raw value instead of reading the env var directly, so this is testable without
-/// touching process-global state.
+/// touching process-global state. `Path::parent` returns `Some("")` rather than `None` for a bare
+/// relative filename, which would otherwise resolve the lock beside the reporter's cwd instead of
+/// falling back to `/tmp`.
 fn socket_dir(socket_path: Option<&str>) -> Option<PathBuf> {
     let socket_path = socket_path?.trim();
     if socket_path.is_empty() {
         return None;
     }
-    Some(Path::new(socket_path).parent()?.to_path_buf())
+    let parent = Path::new(socket_path).parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    Some(parent.to_path_buf())
 }
 
-/// Take the single-reporter lock, or report that another reporter holds it.
-///
-/// The kernel releases the lock when the process ends, avoiding cleanup, PID reuse, and
-/// check-then-write races.
+/// Take the session lock without changing any existing file contents.
 pub fn claim(notify_timeout: Duration) -> Result<File> {
-    let file = File::create(lock_path())?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => {
+    match try_claim(&lock_path())? {
+        Some(file) => Ok(file),
+        None => {
             let _ = herdr::notify(
                 "roboherd: reporter already running",
                 "Another reporter is publishing review state. Stop it before starting another.",
@@ -52,6 +54,19 @@ pub fn claim(notify_timeout: Duration) -> Result<File> {
             );
             Err(Error::ReporterAlreadyRunning)
         }
+    }
+}
+
+/// Return the lock when no reporter holds it.
+pub fn try_claim(path: &Path) -> Result<Option<File>> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(source)) => Err(Error::Io(source)),
     }
 }
@@ -79,5 +94,10 @@ mod tests {
         assert_eq!(socket_dir(None), None);
         assert_eq!(socket_dir(Some("")), None);
         assert_eq!(socket_dir(Some("   ")), None);
+    }
+
+    #[test]
+    fn socket_dir_is_absent_for_a_bare_relative_filename() {
+        assert_eq!(socket_dir(Some("socket")), None);
     }
 }

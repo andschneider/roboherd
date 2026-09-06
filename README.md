@@ -209,7 +209,18 @@ just link     # link this checkout as a herdr plugin
 just unlink   # remove the linked plugin
 ```
 
-If you change the reporter, run `just restart-reporter` to restart it.
+After changing the reporter, rebuild and restart it from inside the herdr session you want to
+update:
+
+```sh
+just stop-reporter
+just package
+just start-reporter
+```
+
+The start and stop recipes use this checkout's `bin/roboherd`. See
+[Reporter lifecycle](#reporter-lifecycle) for readiness, logs, and older reporters without socket
+support.
 
 ## Behavior notes
 
@@ -244,6 +255,19 @@ rather than a guarantee.
 
 `roborev list` can start or restart the roborev daemon, so this plugin keeps one alive whenever it's
 enabled.
+
+### Reporter lifecycle
+
+Herdr starts the reporter automatically. To manage it manually, run inside the target session:
+
+```sh
+roboherd start-reporter  # start in the background, or confirm it is running
+roboherd stop-reporter   # stop and clean up its stream child
+```
+
+Manual starts log to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
+without socket support, restart the herdr session after updating the plugin.
+See [the design notes](docs/design.md#reporter-lifecycle) for the socket protocol and shutdown flow.
 
 ### Panes and popups
 

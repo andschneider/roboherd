@@ -7,6 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `start-reporter` and `stop-reporter` CLI commands for managing the reporter in a herdr session,
+  with socket-based readiness and shutdown acknowledgments.
+
+### Changed
+
+- The reporter owns its `roborev stream` child and kills and reaps it during socket shutdown.
+- `just start-reporter` and `just stop-reporter` delegate to the packaged Rust CLI.
+
+### Fixed
+
+- Scope reporter locks and control sockets to each herdr session so sessions can run independently.
+- Drain queued control requests before reconciliation and clean up cancelled reporter startups
+  without leaving their stream children behind.
+
 ## [0.2.0] - 2026-08-24
 
 ### Added

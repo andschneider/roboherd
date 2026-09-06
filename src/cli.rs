@@ -22,7 +22,14 @@ enum Command {
         /// Log what each workspace resolved to
         #[arg(long, short)]
         verbose: bool,
+        /// Require the spawning CLI to confirm startup through stdin
+        #[arg(long, hide = true, conflicts_with = "once")]
+        startup_handshake: bool,
     },
+    /// Start this session's reporter in the background
+    StartReporter,
+    /// Stop this session's reporter, if one is running
+    StopReporter,
     /// Ask the reporter to reconcile after roborev state changes
     Wake,
     /// Open the commit picker pane for the active workspace
@@ -47,7 +54,13 @@ impl Cli {
     /// Dispatch the parsed subcommand.
     pub fn run(self) -> Result<()> {
         match self.command {
-            Command::Reporter { once, verbose } => commands::reporter::run(once, verbose),
+            Command::Reporter {
+                once,
+                verbose,
+                startup_handshake,
+            } => commands::reporter::run(once, verbose, startup_handshake),
+            Command::StartReporter => commands::reporter::start(),
+            Command::StopReporter => commands::reporter::stop(),
             Command::Wake => wake(),
             Command::OpenPicker => commands::open_picker::run(),
             Command::PickCommit { limit } => commands::pick_commit::run(limit),

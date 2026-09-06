@@ -8,8 +8,10 @@ use crate::badge::Badge;
 use crate::error::Result;
 use crate::git;
 use crate::herdr;
+use crate::reporter::control;
 use crate::reporter::lock;
 use crate::reporter::schedule::{self, POLL_INTERVAL, WAKE_TICK};
+use crate::reporter::startup::Startup;
 use crate::reporter::stream;
 use crate::reporter::transitions::{Event, TransitionTracker, summarize};
 use crate::roborev;
@@ -47,9 +49,9 @@ struct Pass<'a> {
 ///
 /// A second reporter would race metadata writes and make badges alternate between snapshots.
 /// `--once` skips the lock because it performs one diagnostic pass.
-pub fn run(once: bool, verbose: bool) -> Result<()> {
+pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
     // Held for the whole run. Dropping it early would let a second reporter in mid-loop.
-    let _lock = if once {
+    let reporter_lock = if once {
         None
     } else {
         Some(lock::claim(COMMAND_TIMEOUT)?)
@@ -64,12 +66,24 @@ pub fn run(once: bool, verbose: bool) -> Result<()> {
     }
 
     // Started after the lock, so only the reporter that won it holds a stream child.
-    stream::watch();
+    let control = control::Control::bind(lock::lock_path().with_extension("sock"))?;
+    let mut stream = stream::Watcher::default();
 
     let mut next_full_pass = Instant::now();
     let mut last_wake = schedule::observed_time(wake::observe());
 
     loop {
+        if startup.cancelled()? {
+            return Ok(());
+        }
+        if let Some(request) = control.poll()? {
+            drop(stream);
+            drop(control);
+            drop(reporter_lock);
+            control::reply_stopped(request);
+            return Ok(());
+        }
+        stream.tick();
         let started = Instant::now();
         let (run_pass, observed) = schedule::scheduling_decision(
             started,
