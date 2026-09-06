@@ -13,6 +13,7 @@ use crate::reporter::control;
 use crate::reporter::lock;
 use crate::reporter::poller;
 use crate::reporter::startup;
+use crate::requirements;
 
 /// Allow an in-progress reconciliation to finish before handling control requests.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -22,6 +23,9 @@ const START_POLL: Duration = Duration::from_millis(100);
 pub fn run(once: bool, verbose: bool, handshake: bool) -> Result<()> {
     // Set the reporter's creation mask before binding sockets or starting threads.
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
+    if !handshake {
+        requirements::warn();
+    }
     poller::run(once, verbose, startup::Startup::from_stdin(handshake)?)
 }
 
@@ -32,6 +36,7 @@ pub fn start() -> Result<()> {
         println!("reporter already running for this session");
         return Ok(());
     }
+    requirements::warn();
     let log_path = lock::lock_path().with_extension("log");
     let mut child = spawn_reporter(&log_path)?;
     if let Err(err) = await_startup(&mut child, &path) {

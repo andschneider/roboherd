@@ -19,7 +19,7 @@ plugin launches rather than reimplements.
 ## Requirements
 
 - **herdr ≥ 0.7.5**
-- **roborev ≥ 0.63**
+- **roborev ≥ 0.63.0**
 - **macOS or Linux**
 
 ## Quick start
@@ -267,7 +267,7 @@ roboherd stop-reporter   # stop and clean up its stream child
 
 Manual starts log to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
 without socket support, restart the herdr session after updating the plugin.
-See [the design notes](docs/design.md#reporter-lifecycle) for the socket protocol and shutdown flow.
+See [the design notes](docs/design.md#reporter-lifecycle) for status and shutdown details.
 
 ### Panes and popups
 

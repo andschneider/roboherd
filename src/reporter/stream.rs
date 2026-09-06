@@ -37,6 +37,7 @@ pub struct Watcher {
     started: Option<Instant>,
     next: Option<Instant>,
     failures: u32,
+    last_error: Option<String>,
 }
 
 impl Watcher {
@@ -44,15 +45,17 @@ impl Watcher {
     pub fn tick(&mut self) {
         if let Some(child) = self.child.as_mut() {
             match child.try_wait() {
-                Ok(Some(_)) => {
+                Ok(Some(status)) => {
                     self.child = None;
                     self.join_reader();
                     let run = self.started.take().unwrap().elapsed();
+                    self.last_error = Some(format!("roborev stream exited with {status}"));
                     self.retry(outcome(run));
                 }
                 Ok(None) => return,
                 Err(err) => {
                     eprintln!("roboherd: stream status unavailable: {err}");
+                    self.last_error = Some(format!("stream status unavailable: {err}"));
                     return;
                 }
             }
@@ -62,6 +65,7 @@ impl Watcher {
         }
         match exec::spawn_streaming("roborev", &["stream"]) {
             Ok(mut child) => {
+                self.last_error = None;
                 self.reader = child
                     .stdout
                     .take()
@@ -71,9 +75,15 @@ impl Watcher {
             }
             Err(err) => {
                 eprintln!("roboherd: event stream unavailable: {err}");
+                self.last_error = Some(err.to_string());
                 self.retry(Outcome::FailedStart);
             }
         }
+    }
+
+    /// Return the current stream error, if one has been observed.
+    pub fn error(&self) -> Option<String> {
+        self.last_error.clone()
     }
 
     /// Schedule the next stream attempt.

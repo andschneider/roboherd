@@ -11,6 +11,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `start-reporter` and `stop-reporter` CLI commands for managing the reporter in a herdr session,
   with socket-based readiness and shutdown acknowledgments.
+- An atomic reporter status file with process, reconciliation, and stream health details.
+- A `doctor` command that reports the current session's reporter health.
+- Startup warnings and doctor checks for the supported herdr and roborev versions.
 
 ### Changed
 

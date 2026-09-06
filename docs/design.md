@@ -23,15 +23,15 @@ checkout.
 ## Reporter lifecycle
 
 A session-scoped file lock enforces one reporter. Its private Unix socket handles readiness and
-shutdown without trusting stored PIDs. Only the lock holder may replace a stale socket.
+shutdown without trusting stored PIDs. The reporter atomically writes its process, pass, and stream
+state beside the lock so diagnostics never wait for the polling loop.
 
 Startup succeeds after a readiness reply. Until then, a private pipe ties the reporter to its
 spawning CLI: closing it without confirmation triggers graceful cleanup. Shutdown acknowledges only
 after releasing the stream child, socket, and lock.
 
-Control requests are drained before each reconciliation. Stream reconnects also run on this loop, so
-a slow pass delays both. This keeps lifecycle management in one place, while polling remains the
-source of truth. See [the lifecycle commands](../src/commands/reporter.rs) and
+Control requests are drained before each reconciliation. Stream reconnects also run on this loop,
+so a slow pass delays both. See [the lifecycle commands](../src/commands/reporter.rs) and
 [reporter loop](../src/reporter/poller.rs) for the implementation.
 
 ## External constraints

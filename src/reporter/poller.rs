@@ -12,6 +12,8 @@ use crate::reporter::control;
 use crate::reporter::lock;
 use crate::reporter::schedule::{self, POLL_INTERVAL, WAKE_TICK};
 use crate::reporter::startup::Startup;
+use crate::reporter::status;
+use crate::reporter::status::ReporterStatus;
 use crate::reporter::stream;
 use crate::reporter::transitions::{Event, TransitionTracker, summarize};
 use crate::roborev;
@@ -40,6 +42,8 @@ struct Pass<'a> {
     tracker: &'a TransitionTracker,
     /// Transitions from every workspace, notified once when the pass joins.
     events: Mutex<Vec<Event>>,
+    /// Workspace failures retained for status after they are logged.
+    errors: Mutex<Vec<String>>,
     /// The pass's panes, grouped by workspace. Taken from the same snapshot as the workspaces.
     panes: HashMap<String, Vec<herdr::Pane>>,
 }
@@ -68,6 +72,17 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
     // Started after the lock, so only the reporter that won it holds a stream child.
     let control = control::Control::bind(lock::lock_path().with_extension("sock"))?;
     let mut stream = stream::Watcher::default();
+    stream.tick();
+    let mut runtime = ReporterStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        pid: std::process::id(),
+        started_at: unix_seconds(),
+        last_pass_at: None,
+        last_error: None,
+        stream_error: stream.error(),
+    };
+    let status_store = status::Store::new(lock::lock_path().with_extension("status"))?;
+    publish_status(&status_store, &runtime);
 
     let mut next_full_pass = Instant::now();
     let mut last_wake = schedule::observed_time(wake::observe());
@@ -76,14 +91,20 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
         if startup.cancelled()? {
             return Ok(());
         }
+        stream.tick();
+        let stream_error = stream.error();
+        if runtime.stream_error != stream_error {
+            runtime.stream_error = stream_error;
+            publish_status(&status_store, &runtime);
+        }
         if let Some(request) = control.poll()? {
             drop(stream);
             drop(control);
+            drop(status_store);
             drop(reporter_lock);
             control::reply_stopped(request);
             return Ok(());
         }
-        stream.tick();
         let started = Instant::now();
         let (run_pass, observed) = schedule::scheduling_decision(
             started,
@@ -97,17 +118,42 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
         );
         last_wake = observed;
         if run_pass {
-            if let Err(err) = reconcile_all(verbose, &tracker) {
-                eprintln!("roboherd: snapshot failed: {err}");
-            }
+            let error = match reconcile_all(verbose, &tracker) {
+                Ok(error) => error,
+                Err(err) => {
+                    eprintln!("roboherd: snapshot failed: {err}");
+                    Some(err.to_string())
+                }
+            };
+            runtime.last_pass_at = Some(unix_seconds());
+            runtime.last_error = error.map(|error| bounded_error(&error));
+            publish_status(&status_store, &runtime);
             next_full_pass = started + POLL_INTERVAL;
         }
         thread::sleep(WAKE_TICK);
     }
 }
 
+/// Limit errors written to the local status file.
+fn bounded_error(error: &str) -> String {
+    error.chars().take(512).collect()
+}
+
+fn publish_status(store: &status::Store, status: &ReporterStatus) {
+    if let Err(err) = store.write(status) {
+        eprintln!("roboherd: status update failed: {err}");
+    }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Reconcile every open workspace in one pass.
-fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<()> {
+fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<Option<String>> {
     let seq = pass_sequence();
     let herdr::Snapshot { workspaces, panes } = herdr::snapshot(COMMAND_TIMEOUT)?;
     if verbose {
@@ -119,6 +165,7 @@ fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<()> {
         verbose,
         tracker,
         events: Mutex::new(Vec::new()),
+        errors: Mutex::new(Vec::new()),
         panes: herdr::panes_by_workspace(panes),
     };
 
@@ -129,10 +176,15 @@ fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<()> {
             let pass = &pass;
             scope.spawn(move || {
                 if let Err(err) = reconcile(workspace, pass) {
-                    eprintln!(
-                        "roboherd: workspace {} ({}) failed: {err}",
+                    let error = format!(
+                        "workspace {} ({}) failed: {err}",
                         workspace.workspace_id, workspace.label
                     );
+                    eprintln!("roboherd: {error}");
+                    pass.errors
+                        .lock()
+                        .expect("pass errors poisoned")
+                        .push(error);
                 }
             });
         }
@@ -143,7 +195,12 @@ fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<()> {
         pass.events.into_inner().expect("pass events poisoned"),
         verbose,
     );
-    Ok(())
+    let errors = pass.errors.into_inner().expect("pass errors poisoned");
+    Ok(match errors.as_slice() {
+        [] => None,
+        [error] => Some(error.clone()),
+        [first, rest @ ..] => Some(format!("{first} (+{} more workspace failures)", rest.len())),
+    })
 }
 
 /// Raise the pass's single toast.

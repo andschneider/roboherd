@@ -5,5 +5,6 @@ pub(crate) mod lock;
 pub mod poller;
 mod schedule;
 pub(crate) mod startup;
+pub(crate) mod status;
 mod stream;
 mod transitions;

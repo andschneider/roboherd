@@ -14,6 +14,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check the reporter serving the current herdr session
+    Doctor,
     /// Poll roborev for every open workspace and publish the $roborev sidebar token
     Reporter {
         /// Reconcile once and exit instead of looping
@@ -54,6 +56,7 @@ impl Cli {
     /// Dispatch the parsed subcommand.
     pub fn run(self) -> Result<()> {
         match self.command {
+            Command::Doctor => commands::doctor::run(),
             Command::Reporter {
                 once,
                 verbose,

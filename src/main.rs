@@ -10,6 +10,7 @@ mod git;
 mod herdr;
 mod panes;
 mod reporter;
+mod requirements;
 mod roborev;
 mod tui;
 mod wake;
