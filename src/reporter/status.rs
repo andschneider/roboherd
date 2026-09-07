@@ -23,6 +23,35 @@ pub struct ReporterStatus {
     pub stream_error: Option<String>,
 }
 
+impl ReporterStatus {
+    /// Retain workspace failures until the status document reaches its byte limit.
+    pub fn set_errors(&mut self, errors: Vec<String>) {
+        const MAX_ERROR_CHARS: usize = 512;
+
+        let total = errors.len();
+        self.errors = errors
+            .into_iter()
+            .map(|error| error.chars().take(MAX_ERROR_CHARS).collect())
+            .collect();
+        loop {
+            let omitted = total - self.errors.len();
+            if omitted > 0 {
+                self.errors
+                    .push(format!("(+{omitted} more workspace failures)"));
+            }
+            if serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= MAX_STATUS_BYTES) {
+                return;
+            }
+            if omitted > 0 {
+                self.errors.pop();
+            }
+            if self.errors.pop().is_none() {
+                return;
+            }
+        }
+    }
+}
+
 /// Own the current reporter's atomic status file.
 pub struct Store {
     path: PathBuf,
@@ -44,6 +73,7 @@ impl Store {
     /// created, and a squatter that wins the gap between the two is refused rather than followed.
     pub fn write(&self, status: &ReporterStatus) -> io::Result<()> {
         let bytes = serde_json::to_vec(status).map_err(io::Error::other)?;
+        validate_size(&bytes)?;
         remove_if_present(&self.temporary)?;
         let mut file = private_file::create(&self.temporary)?;
         file.write_all(&bytes)?;
@@ -65,15 +95,20 @@ pub fn read(path: &Path) -> io::Result<Option<ReporterStatus>> {
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
+    validate_size(&bytes)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(io::Error::other)
+}
+
+fn validate_size(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > MAX_STATUS_BYTES {
         return Err(io::Error::new(
             ErrorKind::InvalidData,
             "oversized reporter status",
         ));
     }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(io::Error::other)
+    Ok(())
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
@@ -109,5 +144,28 @@ mod tests {
         assert_eq!(stored.stream_error.as_deref(), Some("offline"));
         drop(store);
         assert!(read(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn long_errors_fill_and_round_trip_through_the_status_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("reporter.status");
+        let store = Store::new(path.clone()).unwrap();
+        let mut status = ReporterStatus {
+            version: "test".to_string(),
+            pid: 42,
+            started_at: 1,
+            last_pass_at: Some(2),
+            errors: Vec::new(),
+            stream_error: None,
+        };
+
+        status.set_errors(vec!["x".repeat(512); 20]);
+        store.write(&status).unwrap();
+
+        let stored = read(&path).unwrap().unwrap();
+        assert_eq!(stored.errors, status.errors);
+        assert!(stored.errors.len() > 1);
+        assert!(stored.errors.last().unwrap().starts_with("(+"));
     }
 }

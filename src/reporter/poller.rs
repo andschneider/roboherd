@@ -118,37 +118,17 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
         );
         last_wake = observed;
         if run_pass {
-            let errors = match reconcile_all(verbose, &tracker) {
-                Ok(errors) => errors,
-                Err(err) => {
-                    eprintln!("roboherd: snapshot failed: {err}");
-                    vec![err.to_string()]
-                }
-            };
+            let errors = reconcile_all(verbose, &tracker).unwrap_or_else(|err| {
+                eprintln!("roboherd: snapshot failed: {err}");
+                vec![err.to_string()]
+            });
             runtime.last_pass_at = Some(unix_seconds());
-            runtime.errors = bounded_errors(errors);
+            runtime.set_errors(errors);
             publish_status(&status_store, &runtime);
             next_full_pass = started + POLL_INTERVAL;
         }
         thread::sleep(WAKE_TICK);
     }
-}
-
-/// Limit how many workspace failures, and how much of each, reach the local status file.
-fn bounded_errors(errors: Vec<String>) -> Vec<String> {
-    const MAX_ERRORS: usize = 16;
-    const MAX_ERROR_CHARS: usize = 512;
-
-    let total = errors.len();
-    let mut bounded: Vec<String> = errors
-        .into_iter()
-        .take(MAX_ERRORS)
-        .map(|error| error.chars().take(MAX_ERROR_CHARS).collect())
-        .collect();
-    if total > MAX_ERRORS {
-        bounded.push(format!("(+{} more workspace failures)", total - MAX_ERRORS));
-    }
-    bounded
 }
 
 fn publish_status(store: &status::Store, status: &ReporterStatus) {
@@ -303,19 +283,4 @@ fn checkout_for(workspace: &herdr::Workspace, pass: &Pass) -> Option<PathBuf> {
     let panes = pass.panes.get(&workspace.workspace_id)?;
     let cwd = herdr::representative_pane(panes, &workspace.active_tab_id)?;
     git::repo_root(&cwd, COMMAND_TIMEOUT)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::bounded_errors;
-
-    #[test]
-    fn errors_are_capped_in_count_and_length() {
-        let mut errors: Vec<String> = (0..20).map(|n| format!("w{n}")).collect();
-        errors[0] = "x".repeat(600);
-        let bounded = bounded_errors(errors);
-        assert_eq!(bounded[0], "x".repeat(512));
-        assert_eq!(bounded.last().unwrap(), "(+4 more workspace failures)");
-        assert_eq!(bounded.len(), 17);
-    }
 }
