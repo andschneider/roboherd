@@ -11,10 +11,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `start-reporter` and `stop-reporter` CLI commands for managing the reporter in a herdr session,
   with socket-based readiness and shutdown acknowledgments.
+- An atomic reporter status file with process, reconciliation, and stream health details.
+- A `doctor` command that reports the current session's reporter health.
+- Startup warnings and doctor checks for the supported herdr and roborev versions.
 
 ### Changed
 
 - The reporter owns its `roborev stream` child and kills and reaps it during socket shutdown.
+- The manifest starts the reporter through the detached, readiness-checked launcher.
 - `just start-reporter` and `just stop-reporter` delegate to the packaged Rust CLI.
 
 ### Fixed

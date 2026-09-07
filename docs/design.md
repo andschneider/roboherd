@@ -8,11 +8,11 @@ instead, where it is far likelier to be updated with the code.
 
 ## Shape
 
-One reporter process per herdr session, launched from `[[startup]]`, polls roborev for every open
-workspace in that session and publishes its sidebar tokens with a TTL a few intervals long. A
-`roborev stream` child touches the wake marker on every line, cutting a finished review's wait from
-the poll interval to about a second. Panes and popups are separate short-lived processes that herdr
-spawns per invocation.
+One reporter process per herdr session polls roborev for every open workspace and publishes its
+sidebar tokens with a TTL a few intervals long. The `[[startup]]` hook runs `start-reporter`, which
+detaches the long-running process after readiness. A `roborev stream` child touches the wake marker
+on every line, cutting a finished review's wait from the poll interval to about a second. Panes and
+popups are separate short-lived processes that herdr spawns per invocation.
 
 Nothing shares process-local state between them. The pane listing and roborev's own job list are the
 source of truth, so there is no internal cache to invalidate. Events carry no state, so a dropped
@@ -23,15 +23,15 @@ checkout.
 ## Reporter lifecycle
 
 A session-scoped file lock enforces one reporter. Its private Unix socket handles readiness and
-shutdown without trusting stored PIDs. Only the lock holder may replace a stale socket.
+shutdown without trusting stored PIDs. The reporter atomically writes its process, pass, and stream
+state beside the lock so diagnostics never wait for the polling loop.
 
 Startup succeeds after a readiness reply. Until then, a private pipe ties the reporter to its
 spawning CLI: closing it without confirmation triggers graceful cleanup. Shutdown acknowledges only
 after releasing the stream child, socket, and lock.
 
-Control requests are drained before each reconciliation. Stream reconnects also run on this loop, so
-a slow pass delays both. This keeps lifecycle management in one place, while polling remains the
-source of truth. See [the lifecycle commands](../src/commands/reporter.rs) and
+Control requests are drained before each reconciliation. Stream reconnects also run on this loop,
+so a slow pass delays both. See [the lifecycle commands](../src/commands/reporter.rs) and
 [reporter loop](../src/reporter/poller.rs) for the implementation.
 
 ## External constraints

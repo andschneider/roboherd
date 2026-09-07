@@ -13,6 +13,10 @@ const READY: u8 = b'r';
 const STOPPED: u8 = b'd';
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// How many exchanges a request makes before it reports that nothing answers. A reporter between
+/// accept and reply closes the first one, and a socket nobody serves closes both.
+const REQUEST_ATTEMPTS: u32 = 2;
+
 /// Serve session control requests while the reporter holds its file lock.
 pub struct Control {
     listener: UnixListener,
@@ -69,44 +73,75 @@ pub fn reply_stopped(mut connection: UnixStream) {
     let _ = connection.write_all(&[STOPPED]);
 }
 
-/// Return false only when no listener exists, and require a valid reply otherwise.
+/// Return false when nothing answers, and require a valid reply otherwise.
 pub fn request(path: &Path, command: u8, timeout: Duration) -> Result<bool> {
-    let mut connection = match UnixStream::connect(path) {
+    for _ in 0..REQUEST_ATTEMPTS {
+        let Some(mut connection) = connect(path, timeout)? else {
+            return Ok(false);
+        };
+        match exchange(&mut connection, command) {
+            Ok(reply) => {
+                let expected = if command == PING { READY } else { STOPPED };
+                if reply != expected {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        "invalid reporter reply",
+                    )
+                    .into());
+                }
+                return Ok(true);
+            }
+            Err(err) if closed_before_reply(&err) => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(false)
+}
+
+/// Send one command and read its single reply byte.
+fn exchange(connection: &mut UnixStream, command: u8) -> std::io::Result<u8> {
+    connection.write_all(&[command])?;
+    let mut reply = [0];
+    connection.read_exact(&mut reply)?;
+    Ok(reply[0])
+}
+
+fn closed_before_reply(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+    )
+}
+
+/// Connect to a running reporter and apply the request deadline.
+fn connect(path: &Path, timeout: Duration) -> Result<Option<UnixStream>> {
+    let connection = match UnixStream::connect(path) {
         Ok(connection) => connection,
-        Err(err) => {
-            return if matches!(
+        Err(err)
+            if matches!(
                 err.kind(),
                 ErrorKind::NotFound | ErrorKind::ConnectionRefused
-            ) {
-                Ok(false)
-            } else {
-                Err(err.into())
-            };
+            ) =>
+        {
+            return Ok(None);
         }
+        Err(err) => return Err(err.into()),
     };
     connection.set_read_timeout(Some(timeout))?;
     connection.set_write_timeout(Some(timeout))?;
-    connection.write_all(&[command])?;
-
-    let mut reply = [0];
-    connection.read_exact(&mut reply)?;
-    let expected = if command == PING { READY } else { STOPPED };
-    if reply[0] != expected {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "invalid reporter reply").into());
-    }
-    Ok(true)
+    Ok(Some(connection))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use tempfile::TempDir;
 
-    use super::{Control, PING, STOP, reply_stopped, request};
+    use super::{Control, PING, READY, STOP, reply_stopped, request};
 
     #[test]
     fn ping_and_stop_require_acknowledgement() {
@@ -150,5 +185,22 @@ mod tests {
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert!(!request(&path, PING, Duration::from_secs(1)).unwrap());
         let _control = Control::bind(path).unwrap();
+    }
+
+    #[test]
+    fn request_retries_a_connection_closed_before_its_reply() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            drop(listener.accept().unwrap());
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut command = [0];
+            connection.read_exact(&mut command).unwrap();
+            assert_eq!(command, [PING]);
+            connection.write_all(&[READY]).unwrap();
+        });
+        assert!(request(&path, PING, Duration::from_secs(1)).unwrap());
+        server.join().unwrap();
     }
 }

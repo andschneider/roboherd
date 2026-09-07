@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -12,6 +13,7 @@ use crate::reporter::control;
 use crate::reporter::lock;
 use crate::reporter::poller;
 use crate::reporter::startup;
+use crate::requirements;
 
 /// Allow an in-progress reconciliation to finish before handling control requests.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -21,6 +23,9 @@ const START_POLL: Duration = Duration::from_millis(100);
 pub fn run(once: bool, verbose: bool, handshake: bool) -> Result<()> {
     // Set the reporter's creation mask before binding sockets or starting threads.
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
+    if !handshake {
+        requirements::warn();
+    }
     poller::run(once, verbose, startup::Startup::from_stdin(handshake)?)
 }
 
@@ -40,15 +45,18 @@ pub fn start() -> Result<()> {
         };
         return Err(io::Error::other(format!("{err}{cleanup}; see {}", log_path.display())).into());
     }
+    requirements::warn();
     println!("reporter ready, logging to {}", log_path.display());
     Ok(())
 }
 
 /// Detach a reporter with a private startup pipe and output redirected to its log.
 fn spawn_reporter(log_path: &Path) -> Result<Child> {
+    // Created here, before the reporter it spawns can apply its own creation mask.
     let log = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(log_path)?;
     let mut command = Command::new(std::env::current_exe()?);
     command

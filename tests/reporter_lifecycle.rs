@@ -16,10 +16,13 @@ struct Session {
 impl Session {
     fn new() -> Self {
         let dir = tempfile::tempdir_in("/tmp").unwrap();
-        script(&dir.path().join("herdr"), "#!/bin/sh\nexit 1\n");
+        script(
+            &dir.path().join("herdr"),
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; else exit 1; fi\n",
+        );
         script(
             &dir.path().join("roborev"),
-            "#!/bin/sh\necho $$ >> \"$STREAM_PIDS\"\nexec /bin/sleep 300\n",
+            "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'roborev v0.65.0'; exit; fi\necho $$ >> \"$STREAM_PIDS\"\nexec /bin/sleep 300\n",
         );
         Self { dir }
     }
@@ -174,7 +177,7 @@ fn failed_readiness_cleans_up_only_the_spawned_reporter() {
     let other_pid = rustix::process::Pid::from_raw(other.stream_pid()).unwrap();
     script(
         &session.dir.path().join("herdr"),
-        "#!/bin/sh\nexec /bin/sleep 2\n",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; else exec /bin/sleep 2; fi\n",
     );
     let mut child = session
         .command("reporter")
@@ -225,7 +228,7 @@ fn queued_clients_are_answered_together_after_slow_reconciliation() {
     .unwrap();
     script(
         &session.dir.path().join("herdr"),
-        "#!/bin/sh\nif [ \"$2\" = snapshot ]; then\n echo pass >> \"$TEST_SESSION/passes\"\n /bin/sleep 3\n /bin/cat \"$TEST_SESSION/snapshot.json\"\nelse\n /bin/sleep 3\nfi\n",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; exit; fi\nif [ \"$2\" = snapshot ]; then\n echo pass >> \"$TEST_SESSION/passes\"\n /bin/sleep 3\n /bin/cat \"$TEST_SESSION/snapshot.json\"\nelse\n /bin/sleep 3\nfi\n",
     );
     script(
         &session.dir.path().join("git"),
@@ -233,7 +236,7 @@ fn queued_clients_are_answered_together_after_slow_reconciliation() {
     );
     script(
         &session.dir.path().join("roborev"),
-        "#!/bin/sh\nif [ \"$1\" = stream ]; then\n echo $$ >> \"$STREAM_PIDS\"\n exec /bin/sleep 300\nelse\n /bin/sleep 3\n echo '[]'\nfi\n",
+        "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'roborev v0.65.0'; exit; fi\nif [ \"$1\" = stream ]; then\n echo $$ >> \"$STREAM_PIDS\"\n exec /bin/sleep 300\nelse\n /bin/sleep 3\n echo '[]'\nfi\n",
     );
     let mut reporter = session
         .command("reporter")
@@ -283,6 +286,30 @@ fn queued_clients_are_answered_together_after_slow_reconciliation() {
 }
 
 #[test]
+fn start_reporter_creates_a_private_log_and_lock() {
+    use std::os::unix::process::CommandExt;
+
+    let session = Session::new();
+    let mut command = session.command("start-reporter");
+    // SAFETY: umask is async-signal-safe and touches no Rust shared state.
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::umask(rustix::fs::Mode::empty());
+            Ok(())
+        });
+    }
+    success(command.output().unwrap());
+    for name in ["roboherd-reporter.log", "roboherd-reporter.lock"] {
+        let mode = fs::metadata(session.dir.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "{name} permits group or other access");
+    }
+    success(session.run("stop-reporter"));
+}
+
+#[test]
 fn reporter_uses_private_modes_with_a_permissive_parent_umask() {
     use std::os::unix::process::CommandExt;
 
@@ -300,6 +327,7 @@ fn reporter_uses_private_modes_with_a_permissive_parent_umask() {
     for name in [
         "roboherd-reporter.sock",
         "roboherd-reporter.lock",
+        "roboherd-reporter.status",
         "streams",
     ] {
         let mode = fs::metadata(session.dir.path().join(name))
@@ -310,4 +338,92 @@ fn reporter_uses_private_modes_with_a_permissive_parent_umask() {
     }
     success(session.run("stop-reporter"));
     assert!(reporter.wait().unwrap().success());
+}
+
+#[test]
+fn reporter_status_file_describes_the_live_process() {
+    let session = Session::new();
+    success(session.run("start-reporter"));
+    session.stream_pid();
+    let path = session.dir.path().join("roboherd-reporter.status");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let status: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        if !status["last_pass_at"].is_null() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "status pass was not published");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
+    assert!(status["pid"].as_u64().is_some_and(|pid| pid > 0));
+    assert!(status["errors"].as_array().is_some_and(|errors| {
+        errors
+            .iter()
+            .any(|error| error.as_str().is_some_and(|error| error.contains("herdr")))
+    }));
+    assert!(status["stream_error"].is_null());
+    success(session.run("stop-reporter"));
+    assert!(!path.exists());
+}
+
+#[test]
+fn doctor_reports_the_current_session_reporter() {
+    let session = Session::new();
+    script(
+        &session.dir.path().join("herdr"),
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; else echo '{\"result\":{\"snapshot\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"api\",\"active_tab_id\":\"w1:t1\",\"tokens\":{\"roborev_p\":\"chk1\"}}],\"panes\":[]}}}'; fi\n",
+    );
+    success(session.run("start-reporter"));
+    let output = session.run("doctor");
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
+    success(output);
+    assert!(report.contains("Tools"));
+    assert!(report.contains("herdr 0.8.2"));
+    assert!(report.contains("Reporter"));
+    assert!(report.contains("roborev stream running"));
+    assert!(report.contains("Workspaces"));
+    assert!(report.contains("api (w1): chk1"));
+    success(session.run("stop-reporter"));
+}
+
+#[test]
+fn doctor_fails_when_the_session_reporter_is_absent() {
+    let session = Session::new();
+    let output = session.run("doctor");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reporter is not running"));
+}
+
+#[test]
+fn reporter_retries_when_roborev_is_missing_at_startup() {
+    let session = Session::new();
+    fs::remove_file(session.dir.path().join("roborev")).unwrap();
+    let start = session.run("start-reporter");
+    assert!(String::from_utf8_lossy(&start.stderr).contains("warning"));
+    success(start);
+    let output = session.run("doctor");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("warn roborev version could not be verified"));
+    assert!(report.contains("Reporter"));
+    assert!(report.contains("failed to spawn roborev"));
+    success(session.run("stop-reporter"));
+}
+
+#[test]
+fn doctor_reports_the_reporter_after_a_tool_failure() {
+    let session = Session::new();
+    success(session.run("start-reporter"));
+    script(
+        &session.dir.path().join("roborev"),
+        "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'roborev v0.62.9'; fi\n",
+    );
+    let output = session.run("doctor");
+    assert!(!output.status.success());
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("fail roborev 0.62.9 requires 0.63.0 or newer"));
+    assert!(report.contains("Reporter"));
+    assert!(report.contains("roborev stream running"));
+    success(session.run("stop-reporter"));
 }

@@ -9,17 +9,15 @@ A [herdr](https://github.com/herdrdev/herdr) plugin that integrates
 
 ---
 
-See review status in your workspace sidebar and get notified when a review starts or finishes. Start
-a review with one or more agents from a popup, use roborev's TUI without leaving your tab, or open a
-quick view split with the latest review and quick actions.
-
-Browsing the queue, rerunning jobs, and broader review management stay in `roborev tui`, which this
-plugin launches rather than reimplements.
+- See review status in your workspace sidebar and get notified when a review starts or finishes.
+- Start a review of your latest work with one or more agents.
+- Open a quick view with the newest finished review, then step between reviews, close, or comment.
+- Use roborev's full TUI with a key press.
 
 ## Requirements
 
 - **herdr ≥ 0.7.5**
-- **roborev ≥ 0.63**
+- **roborev ≥ 0.63.0**
 - **macOS or Linux**
 
 ## Quick start
@@ -258,16 +256,29 @@ enabled.
 
 ### Reporter lifecycle
 
-Herdr starts the reporter automatically. To manage it manually, run inside the target session:
+Herdr starts the reporter automatically. To manage it manually, resolve the installed plugin binary
+from inside the target session:
 
 ```sh
-roboherd start-reporter  # start in the background, or confirm it is running
-roboherd stop-reporter   # stop and clean up its stream child
+roboherd_bin="$(herdr plugin list --plugin roboherd --json | jq -r '.result.plugins[0].plugin_root')/bin/roboherd"
+
+"$roboherd_bin" start-reporter  # start in the background, or confirm it is running
+"$roboherd_bin" stop-reporter   # stop and clean up its stream child
 ```
 
-Manual starts log to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
+`start-reporter` logs to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
 without socket support, restart the herdr session after updating the plugin.
-See [the design notes](docs/design.md#reporter-lifecycle) for the socket protocol and shutdown flow.
+See [the design notes](docs/design.md#reporter-lifecycle) for status and shutdown details.
+
+### Diagnostics
+
+Using `roboherd_bin` resolved above, inspect the current herdr session:
+
+```sh
+"$roboherd_bin" doctor
+```
+
+It checks tool versions, configuration, reporter health, and published workspace status.
 
 ### Panes and popups
 
