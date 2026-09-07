@@ -1,6 +1,6 @@
 id = "roboherd"
 name = "Roborev"
-version = "0.2.0"
+version = "0.3.0"
 description = "Inspect roborev reviews, launch new ones, and get notified when they finish"
 min_herdr_version = "0.7.5"
 platforms = ["macos", "linux"]
