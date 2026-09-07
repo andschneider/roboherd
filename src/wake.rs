@@ -1,10 +1,11 @@
-use std::fs::{self, File, FileTimes};
+use std::fs::{self, FileTimes};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use rustix::process::getuid;
+
+use crate::private_file;
 
 /// What one look at the reporter wake marker found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,19 +35,7 @@ fn path() -> PathBuf {
 }
 
 fn touch_path(path: &Path) -> io::Result<()> {
-    let fd = open(
-        path,
-        OFlags::CREATE | OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::from_raw_mode(0o600),
-    )?;
-    let stat = fstat(&fd)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(io::Error::other(
-            "reporter wake marker is not a regular file",
-        ));
-    }
-
-    File::from(fd).set_times(FileTimes::new().set_modified(SystemTime::now()))
+    private_file::create(path)?.set_times(FileTimes::new().set_modified(SystemTime::now()))
 }
 
 fn observe_path(path: &Path) -> Marker {

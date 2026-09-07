@@ -22,7 +22,7 @@ use crate::wake::{self, Marker};
 /// How long a published token survives without a refresh. Spanning roughly three polls keeps one
 /// slow pass from blinking the badge off, while a dead reporter still stops showing stale state
 /// within a minute.
-const TOKEN_TTL: Duration = Duration::from_secs(45);
+pub const TOKEN_TTL: Duration = Duration::from_secs(45);
 
 /// How long any one child process on the poll path gets before it is killed.
 ///
@@ -78,7 +78,7 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
         pid: std::process::id(),
         started_at: unix_seconds(),
         last_pass_at: None,
-        last_error: None,
+        errors: Vec::new(),
         stream_error: stream.error(),
     };
     let status_store = status::Store::new(lock::lock_path().with_extension("status"))?;
@@ -118,15 +118,15 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
         );
         last_wake = observed;
         if run_pass {
-            let error = match reconcile_all(verbose, &tracker) {
-                Ok(error) => error,
+            let errors = match reconcile_all(verbose, &tracker) {
+                Ok(errors) => errors,
                 Err(err) => {
                     eprintln!("roboherd: snapshot failed: {err}");
-                    Some(err.to_string())
+                    vec![err.to_string()]
                 }
             };
             runtime.last_pass_at = Some(unix_seconds());
-            runtime.last_error = error.map(|error| bounded_error(&error));
+            runtime.errors = bounded_errors(errors);
             publish_status(&status_store, &runtime);
             next_full_pass = started + POLL_INTERVAL;
         }
@@ -134,9 +134,21 @@ pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
     }
 }
 
-/// Limit errors written to the local status file.
-fn bounded_error(error: &str) -> String {
-    error.chars().take(512).collect()
+/// Limit how many workspace failures, and how much of each, reach the local status file.
+fn bounded_errors(errors: Vec<String>) -> Vec<String> {
+    const MAX_ERRORS: usize = 16;
+    const MAX_ERROR_CHARS: usize = 512;
+
+    let total = errors.len();
+    let mut bounded: Vec<String> = errors
+        .into_iter()
+        .take(MAX_ERRORS)
+        .map(|error| error.chars().take(MAX_ERROR_CHARS).collect())
+        .collect();
+    if total > MAX_ERRORS {
+        bounded.push(format!("(+{} more workspace failures)", total - MAX_ERRORS));
+    }
+    bounded
 }
 
 fn publish_status(store: &status::Store, status: &ReporterStatus) {
@@ -153,7 +165,7 @@ fn unix_seconds() -> u64 {
 }
 
 /// Reconcile every open workspace in one pass.
-fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<Option<String>> {
+fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<Vec<String>> {
     let seq = pass_sequence();
     let herdr::Snapshot { workspaces, panes } = herdr::snapshot(COMMAND_TIMEOUT)?;
     if verbose {
@@ -195,12 +207,7 @@ fn reconcile_all(verbose: bool, tracker: &TransitionTracker) -> Result<Option<St
         pass.events.into_inner().expect("pass events poisoned"),
         verbose,
     );
-    let errors = pass.errors.into_inner().expect("pass errors poisoned");
-    Ok(match errors.as_slice() {
-        [] => None,
-        [error] => Some(error.clone()),
-        [first, rest @ ..] => Some(format!("{first} (+{} more workspace failures)", rest.len())),
-    })
+    Ok(pass.errors.into_inner().expect("pass errors poisoned"))
 }
 
 /// Raise the pass's single toast.
@@ -296,4 +303,19 @@ fn checkout_for(workspace: &herdr::Workspace, pass: &Pass) -> Option<PathBuf> {
     let panes = pass.panes.get(&workspace.workspace_id)?;
     let cwd = herdr::representative_pane(panes, &workspace.active_tab_id)?;
     git::repo_root(&cwd, COMMAND_TIMEOUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_errors;
+
+    #[test]
+    fn errors_are_capped_in_count_and_length() {
+        let mut errors: Vec<String> = (0..20).map(|n| format!("w{n}")).collect();
+        errors[0] = "x".repeat(600);
+        let bounded = bounded_errors(errors);
+        assert_eq!(bounded[0], "x".repeat(512));
+        assert_eq!(bounded.last().unwrap(), "(+4 more workspace failures)");
+        assert_eq!(bounded.len(), 17);
+    }
 }

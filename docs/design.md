@@ -8,11 +8,11 @@ instead, where it is far likelier to be updated with the code.
 
 ## Shape
 
-One reporter process per herdr session, launched from `[[startup]]`, polls roborev for every open
-workspace in that session and publishes its sidebar tokens with a TTL a few intervals long. A
-`roborev stream` child touches the wake marker on every line, cutting a finished review's wait from
-the poll interval to about a second. Panes and popups are separate short-lived processes that herdr
-spawns per invocation.
+One reporter process per herdr session polls roborev for every open workspace and publishes its
+sidebar tokens with a TTL a few intervals long. The `[[startup]]` hook runs `start-reporter`, which
+detaches the long-running process after readiness. A `roborev stream` child touches the wake marker
+on every line, cutting a finished review's wait from the poll interval to about a second. Panes and
+popups are separate short-lived processes that herdr spawns per invocation.
 
 Nothing shares process-local state between them. The pane listing and roborev's own job list are the
 source of truth, so there is no internal cache to invalidate. Events carry no state, so a dropped

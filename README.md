@@ -258,14 +258,15 @@ enabled.
 
 ### Reporter lifecycle
 
-Herdr starts the reporter automatically. To manage it manually, run inside the target session:
+Herdr starts the reporter automatically through the same detached launcher used below. To manage it
+manually, run inside the target session:
 
 ```sh
 roboherd start-reporter  # start in the background, or confirm it is running
 roboherd stop-reporter   # stop and clean up its stream child
 ```
 
-Manual starts log to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
+`start-reporter` logs to `roboherd-reporter.log` beside `HERDR_SOCKET_PATH`. For an older reporter
 without socket support, restart the herdr session after updating the plugin.
 See [the design notes](docs/design.md#reporter-lifecycle) for status and shutdown details.
 

@@ -18,6 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - The reporter owns its `roborev stream` child and kills and reaps it during socket shutdown.
+- The manifest starts the reporter through the detached, readiness-checked launcher.
 - `just start-reporter` and `just stop-reporter` delegate to the packaged Rust CLI.
 
 ### Fixed

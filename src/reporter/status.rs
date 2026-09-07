@@ -1,12 +1,12 @@
 use std::fs;
-use std::fs::OpenOptions;
 use std::io;
 use std::io::ErrorKind;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::private_file;
 
 const MAX_STATUS_BYTES: usize = 4096;
 
@@ -17,7 +17,9 @@ pub struct ReporterStatus {
     pub pid: u32,
     pub started_at: u64,
     pub last_pass_at: Option<u64>,
-    pub last_error: Option<String>,
+    /// Absent on a status file from a not-yet-restarted, pre-upgrade reporter.
+    #[serde(default)]
+    pub errors: Vec<String>,
     pub stream_error: Option<String>,
 }
 
@@ -37,14 +39,13 @@ impl Store {
     }
 
     /// Replace the visible snapshot after writing the complete document.
+    ///
+    /// The temporary is removed rather than truncated so each update lands on a file this reporter
+    /// created, and a squatter that wins the gap between the two is refused rather than followed.
     pub fn write(&self, status: &ReporterStatus) -> io::Result<()> {
         let bytes = serde_json::to_vec(status).map_err(io::Error::other)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&self.temporary)?;
+        remove_if_present(&self.temporary)?;
+        let mut file = private_file::create(&self.temporary)?;
         file.write_all(&bytes)?;
         fs::rename(&self.temporary, &self.path)
     }
@@ -99,7 +100,7 @@ mod tests {
             pid: 42,
             started_at: 1,
             last_pass_at: Some(2),
-            last_error: None,
+            errors: Vec::new(),
             stream_error: Some("offline".to_string()),
         };
         store.write(&status).unwrap();

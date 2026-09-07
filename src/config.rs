@@ -1,5 +1,6 @@
 //! roboherd's own settings, read from the config directory herdr hands every plugin.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -48,21 +49,67 @@ impl Config {
         toml::from_str(&raw).map_err(|source| Error::ConfigToml { path, source })
     }
 
-    /// The config file path, absent when herdr named no config directory.
-    fn path() -> Option<PathBuf> {
+    /// The config file path. [`CONFIG_DIR_ENV`] wins when herdr set it for a real action; a
+    /// hand-run invocation (`doctor` included, since it is never itself a manifest action) falls
+    /// back to guessing herdr's own config layout, which is not an announced contract and may
+    /// drift from a future herdr version.
+    pub fn path() -> Option<PathBuf> {
         std::env::var_os(CONFIG_DIR_ENV)
             .map(PathBuf::from)
             .filter(|dir| !dir.as_os_str().is_empty())
+            .or_else(|| {
+                guessed_dir(
+                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                    std::env::var_os("HOME").as_deref(),
+                )
+            })
             .map(|dir| dir.join(CONFIG_FILE))
     }
 }
 
+/// Herdr's plugin config root, guessed from what is observed on disk rather than a documented
+/// path: `$XDG_CONFIG_HOME/herdr/plugins/config/<plugin>`, or `$HOME/.config/...` without it.
+fn guessed_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    let base = match xdg_config_home {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(home?).join(".config"),
+    };
+    Some(base.join("herdr/plugins/config").join(crate::PLUGIN_ID))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Config, TuiPlacement};
+    use std::ffi::OsStr;
+
+    use super::{Config, TuiPlacement, guessed_dir};
 
     fn parse(raw: &str) -> Result<Config, toml::de::Error> {
         toml::from_str(raw)
+    }
+
+    #[test]
+    fn xdg_config_home_wins_when_set() {
+        assert_eq!(
+            guessed_dir(Some(OsStr::new("/xdg")), Some(OsStr::new("/home/andrew"))),
+            Some("/xdg/herdr/plugins/config/roboherd".into())
+        );
+    }
+
+    #[test]
+    fn home_is_the_fallback_without_xdg_config_home() {
+        assert_eq!(
+            guessed_dir(None, Some(OsStr::new("/home/andrew"))),
+            Some("/home/andrew/.config/herdr/plugins/config/roboherd".into())
+        );
+        assert_eq!(
+            guessed_dir(Some(OsStr::new("")), Some(OsStr::new("/home/andrew"))),
+            Some("/home/andrew/.config/herdr/plugins/config/roboherd".into())
+        );
+    }
+
+    #[test]
+    fn neither_variable_set_guesses_nothing() {
+        assert_eq!(guessed_dir(None, None), None);
     }
 
     #[test]

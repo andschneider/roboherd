@@ -9,6 +9,7 @@ mod exec;
 mod git;
 mod herdr;
 mod panes;
+mod private_file;
 mod reporter;
 mod requirements;
 mod roborev;

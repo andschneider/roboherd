@@ -36,7 +36,6 @@ pub fn start() -> Result<()> {
         println!("reporter already running for this session");
         return Ok(());
     }
-    requirements::warn();
     let log_path = lock::lock_path().with_extension("log");
     let mut child = spawn_reporter(&log_path)?;
     if let Err(err) = await_startup(&mut child, &path) {
@@ -46,6 +45,7 @@ pub fn start() -> Result<()> {
         };
         return Err(io::Error::other(format!("{err}{cleanup}; see {}", log_path.display())).into());
     }
+    requirements::warn();
     println!("reporter ready, logging to {}", log_path.display());
     Ok(())
 }

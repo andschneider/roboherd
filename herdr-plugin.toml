@@ -14,7 +14,7 @@ platforms = ["macos", "linux"]
 command = ["bash", "scripts/build.sh"]
 
 [[startup]]
-command = ["./bin/roboherd", "reporter"]
+command = ["./bin/roboherd", "start-reporter"]
 
 [[panes]]
 id = "commit-picker"

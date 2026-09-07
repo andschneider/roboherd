@@ -33,6 +33,10 @@ pub struct Workspace {
     pub active_tab_id: String,
     #[serde(default)]
     pub worktree: Option<WorktreeInfo>,
+    /// The metadata tokens herdr currently holds for this workspace, keyed by token name. Absent
+    /// entirely for a workspace with no tokens set, never present with an empty map.
+    #[serde(default)]
+    pub tokens: Option<HashMap<String, String>>,
 }
 
 /// One pane, read for its cwd. Only worktree workspaces carry a checkout path of their own, so a

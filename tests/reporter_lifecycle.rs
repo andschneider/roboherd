@@ -358,11 +358,11 @@ fn reporter_status_file_describes_the_live_process() {
     };
     assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
     assert!(status["pid"].as_u64().is_some_and(|pid| pid > 0));
-    assert!(
-        status["last_error"]
-            .as_str()
-            .is_some_and(|error| error.contains("herdr"))
-    );
+    assert!(status["errors"].as_array().is_some_and(|errors| {
+        errors
+            .iter()
+            .any(|error| error.as_str().is_some_and(|error| error.contains("herdr")))
+    }));
     assert!(status["stream_error"].is_null());
     success(session.run("stop-reporter"));
     assert!(!path.exists());
@@ -373,7 +373,7 @@ fn doctor_reports_the_current_session_reporter() {
     let session = Session::new();
     script(
         &session.dir.path().join("herdr"),
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; else echo '{\"result\":{\"snapshot\":{\"workspaces\":[],\"panes\":[]}}}'; fi\n",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'herdr 0.8.2'; else echo '{\"result\":{\"snapshot\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"api\",\"active_tab_id\":\"w1:t1\",\"tokens\":{\"roborev_p\":\"chk1\"}}],\"panes\":[]}}}'; fi\n",
     );
     success(session.run("start-reporter"));
     let output = session.run("doctor");
@@ -383,6 +383,8 @@ fn doctor_reports_the_current_session_reporter() {
     assert!(report.contains("herdr 0.8.2"));
     assert!(report.contains("Reporter"));
     assert!(report.contains("roborev stream running"));
+    assert!(report.contains("Workspaces"));
+    assert!(report.contains("api (w1): chk1"));
     success(session.run("stop-reporter"));
 }
 
