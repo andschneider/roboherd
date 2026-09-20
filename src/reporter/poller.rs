@@ -55,11 +55,7 @@ struct Pass<'a> {
 /// `--once` skips the lock because it performs one diagnostic pass.
 pub fn run(once: bool, verbose: bool, mut startup: Startup) -> Result<()> {
     // Held for the whole run. Dropping it early would let a second reporter in mid-loop.
-    let reporter_lock = if once {
-        None
-    } else {
-        Some(lock::claim(COMMAND_TIMEOUT)?)
-    };
+    let reporter_lock = if once { None } else { Some(lock::claim()?) };
     let tracker = TransitionTracker::default();
 
     if once {

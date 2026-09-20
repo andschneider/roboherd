@@ -320,8 +320,9 @@ pub fn review(
     review_type: ReviewType,
     reasoning: Reasoning,
     agent: Option<&str>,
+    model: Option<&str>,
 ) -> Result<String> {
-    let args = review_args(selection, review_type, reasoning, agent);
+    let args = review_args(selection, review_type, reasoning, agent, model);
     let output = exec::run("roborev", &args, Some(checkout))?;
     let reply = match output.stdout.trim() {
         "" => output.stderr.trim(),
@@ -338,10 +339,16 @@ fn review_args<'a>(
     review_type: ReviewType,
     reasoning: Reasoning,
     agent: Option<&'a str>,
+    model: Option<&'a str>,
 ) -> Vec<&'a str> {
     let mut args = vec!["review"];
     if let Some(agent) = agent {
         args.extend(["--agent", agent]);
+    }
+    // roborev resolves the model from its own config when the flag is left off, and any value here
+    // short-circuits that whole chain.
+    if let Some(model) = model {
+        args.extend(["--model", model]);
     }
     if let Some(review_type) = review_type.flag() {
         args.extend(["--type", review_type]);
@@ -374,6 +381,14 @@ const AGENT_COMMANDS: [(&str, &str); 11] = [
     ("opencode", "opencode"),
     ("pi", "pi"),
 ];
+
+/// Every agent name `--agent` accepts, sorted.
+pub fn known_agents() -> Vec<String> {
+    AGENT_COMMANDS
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
 
 /// The agents installed on this machine, sorted by name.
 ///
@@ -555,7 +570,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                review_args(selection, review_type, Reasoning::Default, None),
+                review_args(selection, review_type, Reasoning::Default, None, None),
                 want
             );
         }
@@ -567,25 +582,49 @@ mod tests {
     fn argv_carries_an_exact_reasoning_tier_and_omits_the_default() {
         let commit = Selection::Commit("abc".to_string());
         assert_eq!(
-            review_args(&commit, ReviewType::Default, Reasoning::Default, None),
+            review_args(&commit, ReviewType::Default, Reasoning::Default, None, None),
             vec!["review", "abc"]
         );
         assert_eq!(
-            review_args(&commit, ReviewType::Default, Reasoning::XHigh, None),
+            review_args(&commit, ReviewType::Default, Reasoning::XHigh, None, None),
             vec!["review", "--reasoning", "xhigh", "abc"]
         );
         assert_eq!(
-            review_args(&commit, ReviewType::Security, Reasoning::Max, Some("codex")),
+            review_args(
+                &commit,
+                ReviewType::Security,
+                Reasoning::Max,
+                Some("codex"),
+                Some("sonnet-5"),
+            ),
             vec![
                 "review",
                 "--agent",
                 "codex",
+                "--model",
+                "sonnet-5",
                 "--type",
                 "security",
                 "--reasoning",
                 "max",
                 "abc"
             ]
+        );
+    }
+
+    /// A model with no agent is still a valid enqueue, since roborev resolves the agent itself.
+    #[test]
+    fn argv_carries_a_model_without_an_agent() {
+        let commit = Selection::Commit("abc".to_string());
+        assert_eq!(
+            review_args(
+                &commit,
+                ReviewType::Default,
+                Reasoning::Default,
+                None,
+                Some("opus-5")
+            ),
+            vec!["review", "--model", "opus-5", "abc"]
         );
     }
 

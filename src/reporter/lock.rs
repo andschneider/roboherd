@@ -1,12 +1,10 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use rustix::process::getuid;
 
 use crate::error::{Error, Result};
-use crate::herdr;
 
 /// Herdr's env var naming this session's control socket. Each named session is its own server, so
 /// this also names a directory unique to it.
@@ -44,17 +42,12 @@ fn socket_dir(socket_path: Option<&str>) -> Option<PathBuf> {
 }
 
 /// Take the session lock without changing any existing file contents.
-pub fn claim(notify_timeout: Duration) -> Result<File> {
+///
+/// A lost race is reported by `main`, which raises a toast for every error.
+pub fn claim() -> Result<File> {
     match try_claim(&lock_path())? {
         Some(file) => Ok(file),
-        None => {
-            let _ = herdr::notify(
-                "roboherd: reporter already running",
-                "Another reporter is publishing review state. Stop it before starting another.",
-                notify_timeout,
-            );
-            Err(Error::ReporterAlreadyRunning)
-        }
+        None => Err(Error::ReporterAlreadyRunning),
     }
 }
 

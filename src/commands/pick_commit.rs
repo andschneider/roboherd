@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::agents::AgentConfig;
+use crate::config::Config;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::git;
@@ -25,11 +27,13 @@ pub fn run(limit: usize) -> Result<()> {
     let commits = git::recent_commits(&checkout, limit)?;
     let dirty = git::dirty_count(&checkout)?;
     let branch = git::current_branch(&checkout, BRANCH_TIMEOUT)?;
-    let installed = roborev::installed_agents();
+    // The config decides which agents the picker offers. An agent installed but unlisted is
+    // deliberately absent, and `doctor` is what reports the difference.
+    let agents: Vec<(String, AgentConfig)> = Config::load()?.agents.into_iter().collect();
     let default_agent = roborev::default_agent(&checkout);
 
     let mut screen = Screen::open()?;
-    let mut picker = Picker::new(commits, dirty, branch, installed, default_agent, unix_now());
+    let mut picker = Picker::new(commits, dirty, branch, agents, default_agent, unix_now());
 
     let selection = loop {
         screen.draw(|frame| picker.render(frame))?;
@@ -49,15 +53,15 @@ pub fn run(limit: usize) -> Result<()> {
         }
     };
 
-    let agents = picker.take_agents();
+    let choices = picker.take_agents();
     let review_type = picker.review_type();
     let reasoning = picker.reasoning();
-    let mut replies = Vec::with_capacity(agents.len());
+    let mut replies = Vec::with_capacity(choices.len());
     let mut enqueued_any = false;
 
-    for (done, agent) in agents.iter().enumerate() {
+    for (done, choice) in choices.iter().enumerate() {
         // Draw progress before the daemon round-trip so the assigned job id remains visible.
-        picker.set_enqueuing(done, agents.len());
+        picker.set_enqueuing(done, choices.len());
         screen.draw(|frame| picker.render(frame))?;
 
         replies.push(
@@ -66,7 +70,8 @@ pub fn run(limit: usize) -> Result<()> {
                 &selection,
                 review_type,
                 reasoning,
-                agent.as_deref(),
+                choice.agent.as_deref(),
+                choice.model.as_deref(),
             ) {
                 Ok(reply) if reply.is_empty() => {
                     enqueued_any = true;
@@ -77,7 +82,7 @@ pub fn run(limit: usize) -> Result<()> {
                     reply
                 }
                 // One failed agent does not cancel the remaining enqueues.
-                Err(err) => format!("{}: {err}", agent.as_deref().unwrap_or("default")),
+                Err(err) => format!("{}: {err}", choice.agent.as_deref().unwrap_or("default")),
             },
         );
     }

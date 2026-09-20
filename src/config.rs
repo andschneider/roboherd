@@ -1,14 +1,16 @@
 //! roboherd's own settings, read from the config directory herdr hands every plugin.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::agents::AgentConfig;
 use crate::error::{Error, Result};
 
 /// Environment variable carrying the plugin's config directory.
-const CONFIG_DIR_ENV: &str = "HERDR_PLUGIN_CONFIG_DIR";
+pub const CONFIG_DIR_ENV: &str = "HERDR_PLUGIN_CONFIG_DIR";
 
 /// The config file inside that directory.
 const CONFIG_FILE: &str = "config.toml";
@@ -27,6 +29,7 @@ pub enum TuiPlacement {
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     pub tui_placement: TuiPlacement,
+    pub agents: BTreeMap<String, AgentConfig>,
 }
 
 impl Config {
@@ -46,7 +49,26 @@ impl Config {
             Err(source) => return Err(Error::ConfigRead { path, source }),
         };
 
-        toml::from_str(&raw).map_err(|source| Error::ConfigToml { path, source })
+        let config: Self = toml::from_str(&raw).map_err(|source| Error::ConfigToml {
+            path: path.clone(),
+            source,
+        })?;
+        config.validate(&path)?;
+        Ok(config)
+    }
+
+    /// Name the first agent whose `default` is not one of its models.
+    fn validate(&self, path: &Path) -> Result<()> {
+        for (agent, config) in &self.agents {
+            if let Some(model) = config.unlisted_default() {
+                return Err(Error::ConfigAgentDefault {
+                    path: path.to_path_buf(),
+                    agent: agent.clone(),
+                    model: model.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The config file path. [`CONFIG_DIR_ENV`] wins when herdr set it for a real action; a
@@ -80,6 +102,7 @@ fn guessed_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::path::Path;
 
     use super::{Config, TuiPlacement, guessed_dir};
 
@@ -149,5 +172,26 @@ mod tests {
             message.contains("popup") && message.contains("tab"),
             "{message}"
         );
+    }
+
+    /// A default outside the list would enqueue a review the agent rejects, long after the typo.
+    #[test]
+    fn a_default_outside_the_models_list_is_rejected_with_its_path() {
+        let config =
+            parse("[agents.codex]\nmodels = [\"terra\"]\ndefault = \"sol\"\n").expect("parses");
+        let error = config
+            .validate(Path::new("/cfg/config.toml"))
+            .expect_err("rejected");
+        let message = error.to_string();
+        assert!(message.contains("/cfg/config.toml"), "{message}");
+        assert!(message.contains("agents.codex"), "{message}");
+        assert!(message.contains("sol"), "{message}");
+    }
+
+    #[test]
+    fn a_default_naming_a_listed_model_passes() {
+        let config = parse("[agents.codex]\nmodels = [\"terra\", \"sol\"]\ndefault = \"sol\"\n")
+            .expect("parses");
+        assert!(config.validate(Path::new("/cfg/config.toml")).is_ok());
     }
 }
