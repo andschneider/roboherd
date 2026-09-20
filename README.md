@@ -106,16 +106,20 @@ Selecting it reviews the uncommitted work, including staged, unstaged, and untra
 
 #### Agents
 
-Press `a` to open a list of the installed agents, with the roborev configured default checked.
-Checking several starts the same commits once per agent, giving one independent job each.
+Press `a` to open the agents configured under `[agents]`, with roborev's configured default
+checked. Checking several starts the same commits once per agent, giving one independent job each.
+Each row carries its own model, so a fan-out can put one agent on one model and another on another.
 
-| Key             | Does                              |
-|-----------------|-----------------------------------|
-| arrows, `j`/`k` | Move                              |
-| space           | Toggle                            |
-| enter, `a`, `q` | Confirm and return to the commits |
-| escape          | Discard changes and return        |
-| control-C       | Close the popup                   |
+| Key                   | Does                              |
+|-----------------------|-----------------------------------|
+| up/down, `j`/`k`      | Move                              |
+| left/right, `h`/`l`   | Step the row's model              |
+| space                 | Toggle                            |
+| enter, `a`, `q`       | Confirm and return to the commits |
+| escape                | Discard changes and return        |
+| control-C             | Close the popup                   |
+
+A row resting on `default` sends no model and lets roborev resolve one.
 
 Leaving the default untouched keeps roborev's configured choice, which preserves its reasoning-tier
 agent overrides. An empty selection hands the choice back to roborev the same way.
@@ -194,6 +198,19 @@ Available options:
 |-----------------|---------|----------------|---------------------------------|
 | `tui_placement` | `popup` | `popup`, `tab` | Where `open-tui` opens roborev. |
 
+Agents the commit picker offers go under `[agents.<name>]`, keyed by roborev's agent name. `models`
+lists what the row steps through and `default` picks the one it rests on, which must be one of
+them. An agent with no `default` rests on `default`, which sends no model at all.
+
+```toml
+[agents.claude-code]
+models = ["sonnet", "opus"]
+default = "sonnet"
+```
+
+With no `[agents]` table the picker offers nothing and every review goes to roborev's own agent and
+model. Run `roboherd doctor` for the tables to paste.
+
 ## Development
 
 Use the `justfile` to develop and test the plugin.
@@ -246,10 +263,13 @@ commit, since there is no `START^`.
 
 ### Agents and the daemon
 
-Only agents whose command is on `PATH` are offered, so a name roborev accepts can still be missing
-from the list. The one labelled default comes from `roborev config get`, which merges repo config
-over global, and roborev layers reasoning-tier overrides above that, so the label is indicative
-rather than a guarantee.
+Only agents named in `[agents]` are offered, so installing one is not enough to see it. `doctor`
+reports both directions of the difference between that table and `PATH`, and prints the tables to
+paste. The pre-checked agent comes from `roborev config get`, which merges repo config over global,
+and roborev layers reasoning-tier overrides above that, so it is indicative rather than a guarantee.
+
+Nothing validates a model name. roborev passes `--model` straight to the agent, so a wrong name
+fails inside the agent rather than at enqueue.
 
 `roborev list` can start or restart the roborev daemon, so this plugin keeps one alive whenever it's
 enabled.

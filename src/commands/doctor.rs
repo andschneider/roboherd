@@ -108,7 +108,8 @@ fn render_environment() -> (String, bool) {
         line(
             &mut report,
             "warn",
-            "no roborev-compatible agent found on PATH; the commit picker has nothing to offer",
+            "no roborev-compatible agent found on PATH; any review enqueued here fails inside \
+             roborev",
         );
     } else {
         line(
@@ -152,7 +153,11 @@ fn render_agent_drift(
     if configured.is_empty() {
         lines.push((
             "warn",
-            format!("no agents configured. {}", paste(&unconfigured, path)),
+            format!(
+                "no agents configured, so the picker offers none and every review goes to \
+                 roborev's own default. {}",
+                paste(&unconfigured, path)
+            ),
         ));
         return lines;
     }

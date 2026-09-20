@@ -8,6 +8,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::Span;
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
+use crate::agents::AgentConfig;
 use crate::git::Commit;
 use crate::roborev::{Reasoning, ReviewType, Selection};
 
@@ -18,6 +19,13 @@ pub(crate) enum Action {
     Handled,
     Quit,
     Enqueue,
+}
+
+/// One enqueue's reviewer. `None` in either field leaves roborev to resolve it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Choice {
+    pub(crate) agent: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
 /// Which list the picker is showing. The agent list takes the whole body rather than sharing it.
@@ -72,12 +80,20 @@ struct CommitPicker {
     table: TableState,
 }
 
+/// One configured agent and the model it would run with.
+struct AgentRow {
+    name: String,
+    /// The models the arrow keys step through. The leading `None` leaves `--model` off, so every
+    /// agent can be handed back to roborev's own resolution.
+    models: Vec<Option<String>>,
+    /// Index into `models`.
+    model: usize,
+}
+
 /// Agent list state and selection.
 struct AgentPicker {
-    /// Installed agents, sorted.
-    agents: Vec<String>,
-    /// Row and display label for roborev's configured default.
-    default: Option<(usize, String)>,
+    /// Configured agents, in config order, which is sorted by name.
+    rows: Vec<AgentRow>,
     /// Agent names to enqueue with. Empty leaves roborev to choose.
     chosen: BTreeSet<String>,
     /// Whether the checked default still represents roborev's implicit choice.
@@ -86,9 +102,14 @@ struct AgentPicker {
     /// Selection saved when the agent list opens, restored when escape cancels.
     saved: BTreeSet<String>,
     saved_implicit: bool,
+    /// Model indices saved alongside `saved`.
+    saved_models: Vec<usize>,
     /// Scroll position, owned by the table widget.
     table: TableState,
 }
+
+/// The model column's word for leaving `--model` off, so the cell is never blank.
+const NO_MODEL: &str = "default";
 
 /// How far the page keys jump.
 const PAGE: usize = 10;
@@ -157,7 +178,7 @@ impl Picker {
         commits: Vec<Commit>,
         dirty: usize,
         branch: String,
-        agents: Vec<String>,
+        agents: Vec<(String, AgentConfig)>,
         default_agent: Option<String>,
         now: i64,
     ) -> Self {
@@ -226,8 +247,8 @@ impl Picker {
         self.phase = Phase::Refused(reason);
     }
 
-    pub(crate) fn take_agents(&mut self) -> Vec<Option<String>> {
-        self.agents.take_chosen_agents()
+    pub(crate) fn take_agents(&mut self) -> Vec<Choice> {
+        self.agents.take_chosen()
     }
 
     pub(crate) fn review_type(&self) -> ReviewType {
@@ -434,27 +455,78 @@ impl CommitPicker {
     }
 }
 
-impl AgentPicker {
-    fn new(agents: Vec<String>, default_agent: Option<String>) -> Self {
-        let default = default_agent.and_then(|default_agent| {
-            let row = agents.iter().position(|agent| agent == &default_agent)?;
-            Some((row, default_agent))
-        });
-        let (default, chosen) = match default {
-            Some((row, agent)) => {
-                let label = format!("{agent} (default)");
-                (Some((row, label)), BTreeSet::from([agent]))
-            }
-            None => (None, BTreeSet::new()),
-        };
+impl AgentRow {
+    /// One row, resting on the model the config names as its default.
+    ///
+    /// Every agent's cycle opens with the no-model entry, so one that names no default rests there
+    /// and one that does can still be stepped back to it.
+    fn new(name: String, config: &AgentConfig) -> Self {
+        let mut models = vec![None];
+        models.extend(config.models.iter().cloned().map(Some));
+        let model = config
+            .default_model
+            .as_deref()
+            .and_then(|default| {
+                models
+                    .iter()
+                    .position(|model| model.as_deref() == Some(default))
+            })
+            .unwrap_or_default();
         Self {
-            agents,
-            default,
+            name,
+            models,
+            model,
+        }
+    }
+
+    /// The model this row would enqueue with, absent when roborev resolves it.
+    fn model(&self) -> Option<&str> {
+        self.models.get(self.model)?.as_deref()
+    }
+
+    /// The model column, which names the no-model entry rather than leaving a blank cell.
+    fn label(&self) -> &str {
+        self.model().unwrap_or(NO_MODEL)
+    }
+
+    /// Step to the next model, wrapping, so one key reaches every option.
+    ///
+    /// Reports whether the index moved, since a row with no models has nothing to step to.
+    fn cycle(&mut self, forward: bool) -> bool {
+        if self.models.len() < 2 {
+            return false;
+        }
+        let last = self.models.len() - 1;
+        self.model = match forward {
+            true if self.model == last => 0,
+            true => self.model + 1,
+            false if self.model == 0 => last,
+            false => self.model - 1,
+        };
+        true
+    }
+}
+
+impl AgentPicker {
+    fn new(agents: Vec<(String, AgentConfig)>, default_agent: Option<String>) -> Self {
+        let rows: Vec<AgentRow> = agents
+            .into_iter()
+            .map(|(name, config)| AgentRow::new(name, &config))
+            .collect();
+        // roborev's configured agent starts checked, which is the only mark it gets. Naming it in
+        // the row too would put a second, unrelated "default" beside the model column's.
+        let chosen = default_agent
+            .filter(|agent| rows.iter().any(|row| &row.name == agent))
+            .map(|agent| BTreeSet::from([agent]))
+            .unwrap_or_default();
+        Self {
+            rows,
             chosen,
             implicit: true,
             cursor: 0,
             saved: BTreeSet::new(),
             saved_implicit: true,
+            saved_models: Vec::new(),
             table: TableState::new(),
         }
     }
@@ -462,15 +534,19 @@ impl AgentPicker {
     fn begin_edit(&mut self) {
         self.saved.clone_from(&self.chosen);
         self.saved_implicit = self.implicit;
+        self.saved_models = self.rows.iter().map(|row| row.model).collect();
     }
 
     fn cancel_edit(&mut self) {
         self.chosen.clone_from(&self.saved);
         self.implicit = self.saved_implicit;
+        for (row, model) in self.rows.iter_mut().zip(&self.saved_models) {
+            row.model = *model;
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Action {
-        let last = self.agents.len().saturating_sub(1);
+        let last = self.rows.len().saturating_sub(1);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.cursor = self.cursor.saturating_sub(1);
@@ -478,50 +554,58 @@ impl AgentPicker {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.cursor = (self.cursor + 1).min(last);
             }
+            KeyCode::Right | KeyCode::Char('l') => self.cycle(true),
+            KeyCode::Left | KeyCode::Char('h') => self.cycle(false),
             KeyCode::Char(' ') => self.toggle(),
             _ => {}
         }
         Action::Handled
     }
 
+    /// Step the highlighted row's model.
+    ///
+    /// Choosing a model for a checked row makes the selection explicit, so the pre-checked default
+    /// stops being roborev's implicit choice and the model reaches the enqueue. A row with no
+    /// models to step keeps the implicit default, since the key changed nothing to be explicit
+    /// about.
+    fn cycle(&mut self, forward: bool) {
+        let Some(row) = self.rows.get_mut(self.cursor) else {
+            return;
+        };
+        if row.cycle(forward) && self.chosen.contains(&row.name) {
+            self.implicit = false;
+        }
+    }
+
     /// Add the agent under the cursor to the selection, or take it back out.
     fn toggle(&mut self) {
-        let Some(agent) = self.agents.get(self.cursor) else {
+        let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
 
         self.implicit = false;
-        if !self.chosen.remove(agent) {
-            self.chosen.insert(agent.clone());
+        if !self.chosen.remove(&row.name) {
+            self.chosen.insert(row.name.clone());
         }
     }
 
-    /// Take the agents to enqueue with in roster order.
-    fn take_chosen_agents(&mut self) -> Vec<Option<String>> {
+    /// Take the reviewers to enqueue with, in roster order.
+    fn take_chosen(&mut self) -> Vec<Choice> {
         if self.implicit || self.chosen.is_empty() {
-            return vec![None];
+            return vec![Choice {
+                agent: None,
+                model: None,
+            }];
         }
-        std::mem::take(&mut self.chosen)
-            .into_iter()
-            .map(Some)
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn chosen_agents(&self) -> Vec<Option<&str>> {
-        if self.implicit {
-            return vec![None];
-        }
-        let agents: Vec<Option<&str>> = self
-            .chosen
+        let chosen = std::mem::take(&mut self.chosen);
+        self.rows
             .iter()
-            .map(|agent| Some(agent.as_str()))
-            .collect();
-
-        match agents.is_empty() {
-            true => vec![None],
-            false => agents,
-        }
+            .filter(|row| chosen.contains(&row.name))
+            .map(|row| Choice {
+                agent: Some(row.name.clone()),
+                model: row.model().map(str::to_string),
+            })
+            .collect()
     }
 
     fn summary(&self) -> String {
@@ -540,23 +624,35 @@ impl AgentPicker {
     }
 
     fn render(&mut self, frame: &mut Frame, body: Rect) {
-        let rows = self.agents.iter().enumerate().map(|(index, agent)| {
-            let mark = match self.chosen.contains(agent) {
+        let rows = self.rows.iter().map(|row| {
+            let mark = match self.chosen.contains(&row.name) {
                 true => "[X]",
                 false => "[ ]",
             };
-            let label = match &self.default {
-                Some((row, label)) if *row == index => Cell::from(label.as_str()),
-                _ => Cell::from(agent.as_str()),
-            };
-            Row::new([Cell::from(""), Cell::from(mark), label, Cell::from("")])
+            Row::new([
+                Cell::from(""),
+                Cell::from(mark),
+                Cell::from(row.name.as_str()),
+                Cell::from(row.label()),
+                Cell::from(""),
+            ])
         });
+
+        // The name column is sized to its widest entry so the model reads as part of the same
+        // row rather than a distant column.
+        let names = self
+            .rows
+            .iter()
+            .map(|row| display_width(&row.name))
+            .max()
+            .unwrap_or_default();
 
         let table = Table::new(
             rows,
             [
                 Constraint::Length(0),
                 Constraint::Length(3),
+                Constraint::Length(names as u16),
                 Constraint::Min(10),
                 Constraint::Length(0),
             ],
@@ -564,7 +660,7 @@ impl AgentPicker {
         .row_highlight_style(Style::new().reversed());
 
         self.table
-            .select((!self.agents.is_empty()).then_some(self.cursor));
+            .select((!self.rows.is_empty()).then_some(self.cursor));
         frame.render_stateful_widget(table, body, &mut self.table);
     }
 }
@@ -606,7 +702,9 @@ impl Picker {
                 count => format!("{count} results {SEPARATOR} press any key to close"),
             },
             Phase::Browsing if self.view == View::Agents => self.browsing_status(
-                &format!("esc {SEPARATOR} space toggles {SEPARATOR} enter"),
+                &format!(
+                    "esc {SEPARATOR} space toggles {SEPARATOR} \u{2190}\u{2192} model {SEPARATOR} enter"
+                ),
                 width,
             ),
             Phase::Browsing if self.commits.rows() == 0 => self.browsing_status(
@@ -666,7 +764,12 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Modifier;
 
-    use super::{Action, Phase, Picker, View, age, display_width, truncate_to_width};
+    use std::collections::BTreeSet;
+
+    use super::{
+        Action, AgentConfig, AgentPicker, Choice, Phase, Picker, View, age, display_width,
+        truncate_to_width,
+    };
     use crate::commands::pick_commit::refusal;
     use crate::git;
     use crate::git::Commit;
@@ -683,11 +786,34 @@ mod tests {
     const TEST_WIDTH: u16 = 80;
 
     /// A fixed roster, sorted as `roborev::installed_agents` returns it.
-    fn agent_roster() -> Vec<String> {
-        ["claude-code", "codex", "pi"]
-            .iter()
-            .map(|agent| agent.to_string())
-            .collect()
+    /// Three configured agents in config order, which a `BTreeMap` sorts by name: one with models
+    /// and a default, one with models and none, and one with no models, as a freshly pasted table
+    /// arrives.
+    fn agent_roster() -> Vec<(String, AgentConfig)> {
+        vec![
+            (
+                "claude-code".to_string(),
+                AgentConfig {
+                    models: vec!["sonnet-5".to_string(), "opus-5".to_string()],
+                    default_model: Some("sonnet-5".to_string()),
+                },
+            ),
+            (
+                "codex".to_string(),
+                AgentConfig {
+                    models: vec!["sol".to_string(), "astral".to_string()],
+                    default_model: None,
+                },
+            ),
+            ("pi".to_string(), AgentConfig::default()),
+        ]
+    }
+
+    fn choice(agent: &str, model: Option<&str>) -> Choice {
+        Choice {
+            agent: Some(agent.to_string()),
+            model: model.map(str::to_string),
+        }
     }
 
     const MINUTE: i64 = 60;
@@ -1039,7 +1165,148 @@ mod tests {
     #[test]
     fn the_default_agent_starts_as_roborevs_implicit_choice() {
         let mut picker = picker();
-        assert_eq!(picker.agents.take_chosen_agents(), vec![None]);
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
+        );
+    }
+
+    /// A model key that cannot move a model-less row leaves the implicit default alone, so the
+    /// enqueue still carries no `--agent`.
+    #[test]
+    fn a_model_key_on_a_model_less_default_keeps_the_implicit_choice() {
+        let mut agents = AgentPicker::new(agent_roster(), Some("pi".to_string()));
+        agents.cursor = 2;
+        agents.cycle(true);
+
+        assert_eq!(
+            agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
+        );
+    }
+
+    /// An agent whose config names a default always sends it, and one that names none sends no
+    /// `--model` so roborev's own resolution still applies.
+    #[test]
+    fn an_unopened_model_column_sends_the_configured_default() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        // codex is the pre-checked default, so only the other two are toggled on.
+        press(&mut picker, KeyCode::Char(' '));
+        picker.agents.cursor = 2;
+        press(&mut picker, KeyCode::Char(' '));
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![
+                choice("claude-code", Some("sonnet-5")),
+                choice("codex", None),
+                choice("pi", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_arrow_keys_step_the_highlighted_rows_model() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        press(&mut picker, KeyCode::Char(' ')); // claude-code, resting on sonnet-5
+        press(&mut picker, KeyCode::Right);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![choice("claude-code", Some("opus-5")), choice("codex", None),]
+        );
+    }
+
+    /// An agent that names no default rests on the no-model entry, so its first step is onto a
+    /// listed model.
+    #[test]
+    fn an_agent_without_a_default_steps_from_no_model_onto_one() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        press(&mut picker, KeyCode::Char(' ')); // breaks the implicit default
+        picker.agents.cursor = 1;
+        press(&mut picker, KeyCode::Right);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![
+                choice("claude-code", Some("sonnet-5")),
+                choice("codex", Some("sol")),
+            ]
+        );
+    }
+
+    /// An agent resting on a configured default can still be handed back to roborev.
+    #[test]
+    fn stepping_back_onto_the_no_model_entry_sends_no_model() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        press(&mut picker, KeyCode::Char(' ')); // claude-code, resting on sonnet-5
+        press(&mut picker, KeyCode::Left);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![choice("claude-code", None), choice("codex", None)]
+        );
+    }
+
+    /// Stepping back past the no-model entry wraps to the last listed model.
+    #[test]
+    fn stepping_back_from_the_no_model_entry_wraps_to_the_last_model() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        press(&mut picker, KeyCode::Char(' '));
+        press(&mut picker, KeyCode::Left);
+        press(&mut picker, KeyCode::Left);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![choice("claude-code", Some("opus-5")), choice("codex", None)]
+        );
+    }
+
+    /// An agent configured with no models has nothing to step through.
+    #[test]
+    fn an_agent_without_models_ignores_the_arrow_keys() {
+        let mut picker = picker();
+        picker.view = View::Agents;
+        picker.agents.cursor = 2;
+        press(&mut picker, KeyCode::Char(' '));
+        press(&mut picker, KeyCode::Right);
+        press(&mut picker, KeyCode::Right);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![choice("codex", None), choice("pi", None)]
+        );
+    }
+
+    /// Escape restores the models alongside the checkmarks it already restored.
+    #[test]
+    fn escaping_the_agent_list_restores_the_models_too() {
+        let mut picker = picker();
+        press(&mut picker, KeyCode::Char('a'));
+        press(&mut picker, KeyCode::Char(' '));
+        press(&mut picker, KeyCode::Right);
+        press(&mut picker, KeyCode::Esc);
+        press(&mut picker, KeyCode::Char('a'));
+        press(&mut picker, KeyCode::Char(' '));
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![
+                choice("claude-code", Some("sonnet-5")),
+                choice("codex", None),
+            ]
+        );
     }
 
     #[test]
@@ -1052,11 +1319,11 @@ mod tests {
         press(&mut picker, KeyCode::Char(' ')); // then claude-code
 
         assert_eq!(
-            picker.agents.take_chosen_agents(),
+            picker.agents.take_chosen(),
             vec![
-                Some("claude-code".to_string()),
-                Some("codex".to_string()),
-                Some("pi".to_string())
+                choice("claude-code", Some("sonnet-5")),
+                choice("codex", None),
+                choice("pi", None),
             ]
         );
     }
@@ -1068,7 +1335,13 @@ mod tests {
         press(&mut picker, KeyCode::Char('a'));
         press(&mut picker, KeyCode::Down); // onto codex
         press(&mut picker, KeyCode::Char(' '));
-        assert_eq!(picker.agents.chosen_agents(), vec![None]);
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
+        );
 
         let mut bare = Picker::new(
             picker.commits.commits,
@@ -1080,7 +1353,13 @@ mod tests {
         );
         press(&mut bare, KeyCode::Char('a'));
         press(&mut bare, KeyCode::Char(' '));
-        assert_eq!(bare.agents.chosen_agents(), vec![None]);
+        assert_eq!(
+            bare.agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
+        );
     }
 
     #[test]
@@ -1107,8 +1386,8 @@ mod tests {
         press(&mut picker, KeyCode::Char(' '));
         press(&mut picker, KeyCode::Enter);
         assert_eq!(
-            picker.agents.chosen_agents(),
-            vec![Some("claude-code"), Some("codex")]
+            picker.agents.chosen,
+            BTreeSet::from(["claude-code".to_string(), "codex".to_string()])
         );
 
         press(&mut picker, KeyCode::Char('a'));
@@ -1117,21 +1396,57 @@ mod tests {
         press(&mut picker, KeyCode::Char(' '));
         press(&mut picker, KeyCode::Esc);
         assert_eq!(
-            picker.agents.chosen_agents(),
-            vec![Some("claude-code"), Some("codex")]
+            picker.agents.take_chosen(),
+            vec![
+                choice("claude-code", Some("sonnet-5")),
+                choice("codex", None),
+            ]
+        );
+    }
+
+    /// Choosing a model for the pre-checked default is a real selection, so the enqueue must carry
+    /// it rather than falling back to roborev's choice.
+    #[test]
+    fn cycling_the_prechecked_defaults_model_still_enqueues_it() {
+        let mut picker = picker();
+        press(&mut picker, KeyCode::Char('a'));
+        picker.agents.cursor = 1; // codex, checked without a keypress
+        press(&mut picker, KeyCode::Right);
+        press(&mut picker, KeyCode::Enter);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![choice("codex", Some("sol"))]
+        );
+    }
+
+    /// Cycling a row nobody checked changes no selection.
+    #[test]
+    fn cycling_an_unchecked_rows_model_leaves_the_choice_to_roborev() {
+        let mut picker = picker();
+        press(&mut picker, KeyCode::Char('a'));
+        press(&mut picker, KeyCode::Right); // claude-code, unchecked
+        press(&mut picker, KeyCode::Enter);
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
         );
     }
 
     #[test]
-    fn the_agent_list_labels_the_default_and_the_footer_follows_the_selection() {
+    fn the_agent_list_checks_the_default_and_the_footer_follows_the_selection() {
         let mut picker = picker();
         press(&mut picker, KeyCode::Char('a'));
         shows(
             &mut picker,
             &[
-                "[X] codex (default)",
+                "[X] codex",
                 "[ ] claude-code",
-                "[b: main] | esc | space toggles | enter",
+                "[b: main] | esc | space toggles | \u{2190}\u{2192} model | enter",
                 "!> ",
             ],
         );
@@ -1139,6 +1454,41 @@ mod tests {
         press(&mut picker, KeyCode::Char(' ')); // select claude-code
         press(&mut picker, KeyCode::Enter);
         shows(&mut picker, &["a claude-code, codex"]);
+    }
+
+    /// A config with no agents leaves the picker nothing to offer, which enqueues once with no
+    /// `--agent` and no `--model` rather than refusing.
+    #[test]
+    fn an_empty_roster_falls_back_to_roborevs_own_choice() {
+        let mut picker = Picker::new(
+            picker().commits.commits,
+            0,
+            "main".to_string(),
+            Vec::new(),
+            Some("codex".to_string()),
+            NOW,
+        );
+        press(&mut picker, KeyCode::Char('a'));
+        press(&mut picker, KeyCode::Char(' '));
+
+        assert_eq!(
+            picker.agents.take_chosen(),
+            vec![Choice {
+                agent: None,
+                model: None
+            }]
+        );
+    }
+
+    /// The model belongs beside the agent that runs it, not in a far column.
+    #[test]
+    fn the_model_sits_directly_after_its_agent() {
+        let mut picker = picker();
+        press(&mut picker, KeyCode::Char('a'));
+        shows(
+            &mut picker,
+            &["claude-code sonnet-5", "codex       default"],
+        );
     }
 
     #[test]
@@ -1152,7 +1502,7 @@ mod tests {
             NOW,
         );
         press(&mut picker, KeyCode::Char('a'));
-        shows(&mut picker, &["!(default)", "![X]"]);
+        shows(&mut picker, &["![X]"]);
     }
 
     #[test]

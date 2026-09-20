@@ -26,7 +26,7 @@ use crate::cli::Cli;
 /// Manifest id of the plugin this binary backs. Pane-open requests are scoped by it.
 pub const PLUGIN_ID: &str = "roboherd";
 
-/// How long the failure toast gets, short because the process is already on its way out.
+/// How long the notification subprocess gets, short because the process is already exiting.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() {

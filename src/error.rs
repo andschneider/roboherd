@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 /// Application-wide error type for the roboherd plugin binary.
 #[derive(Debug, thiserror::Error)]
@@ -90,24 +91,38 @@ const MAX_SUMMARY: usize = 90;
 impl Error {
     /// One short line naming what broke and where, for a toast.
     ///
-    /// A TOML error's display spends a full path on a file there is one of and draws a caret
-    /// diagram a toast cannot align, so its `message` is used instead. `CommandFailed` embeds a
-    /// subprocess's stderr, so any variant can still arrive with line breaks in it. stderr and the
-    /// plugin log keep the whole thing.
+    /// Every config error spends a full path on a file there is one of, and a TOML error also
+    /// draws a caret diagram a toast cannot align, so each is rebuilt from its fields with the
+    /// cause first. `CommandFailed` embeds a subprocess's stderr, so any variant can still arrive
+    /// with line breaks in it. stderr and the plugin log keep the whole thing.
     pub fn summary(&self) -> String {
         let summary = match self {
             Error::ConfigToml { path, source } => {
-                let file = path.file_name().unwrap_or(path.as_os_str());
-                format!("{}: {}", file.to_string_lossy(), source.message())
+                format!("{}: {}", file_name(path), source.message())
             }
+            Error::ConfigRead { path, source } => format!("{}: {source}", file_name(path)),
+            Error::ConfigAgentDefault { path, agent, model } => format!(
+                "agents.{agent} defaults to {model}, which is not in its models list ({})",
+                file_name(path)
+            ),
             other => other.to_string(),
         };
         let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-        match summary.char_indices().nth(MAX_SUMMARY) {
-            Some((end, _)) => format!("{}\u{2026}", &summary[..end]),
-            None => summary,
+        // The cut lands one character short so the ellipsis does not push the result past the
+        // limit, and only a summary with a character beyond the limit is cut at all.
+        let mut tail = summary.char_indices().skip(MAX_SUMMARY - 1);
+        match (tail.next(), tail.next()) {
+            (Some((end, _)), Some(_)) => format!("{}\u{2026}", &summary[..end]),
+            _ => summary,
         }
     }
+}
+
+/// The config file's own name, since its directory is fixed and its path is what overran the toast.
+fn file_name(path: &Path) -> Cow<'_, str> {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -154,6 +169,24 @@ mod tests {
         );
     }
 
+    /// Every config error names the file, not the path, so a long path cannot crowd out the cause.
+    #[test]
+    fn every_config_error_names_the_file_rather_than_the_path() {
+        let summary = Error::ConfigAgentDefault {
+            path: PathBuf::from("/Users/someone/.config/herdr/plugins/config/roboherd/config.toml"),
+            agent: "codex".to_string(),
+            model: "sol".to_string(),
+        }
+        .summary();
+
+        assert!(
+            summary.starts_with("agents.codex defaults to sol"),
+            "{summary}"
+        );
+        assert!(summary.contains("config.toml"), "{summary}");
+        assert!(!summary.contains("/Users/someone"), "{summary}");
+    }
+
     #[test]
     fn an_already_short_error_is_passed_through() {
         assert_eq!(
@@ -163,13 +196,25 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_of_exactly_the_limit_keeps_its_last_character() {
+        let program = "x".repeat(60);
+        let summary = Error::CommandUtf8 {
+            program: program.clone(),
+        }
+        .summary();
+
+        assert_eq!(summary, format!("{program} produced invalid UTF-8 output"));
+        assert_eq!(summary.chars().count(), 90);
+    }
+
+    #[test]
     fn an_overlong_summary_is_cut_short() {
         let summary = Error::CommandUtf8 {
             program: "x".repeat(500),
         }
         .summary();
 
-        assert_eq!(summary.chars().count(), 91);
+        assert_eq!(summary.chars().count(), 90);
         assert!(summary.ends_with('\u{2026}'));
     }
 }
