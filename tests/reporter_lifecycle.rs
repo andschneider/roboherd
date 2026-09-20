@@ -33,6 +33,9 @@ impl Session {
             .env("HERDR_SOCKET_PATH", self.dir.path().join("herdr.sock"))
             .env("STREAM_PIDS", self.dir.path().join("streams"))
             .env("HERDR_BIN_PATH", self.dir.path().join("herdr"))
+            // Without this the config path falls back to guessing herdr's layout, and the suite
+            // reads whatever config the machine running it happens to hold.
+            .env("HERDR_PLUGIN_CONFIG_DIR", self.dir.path())
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.dir.path().display()),
