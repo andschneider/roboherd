@@ -375,6 +375,14 @@ const AGENT_COMMANDS: [(&str, &str); 11] = [
     ("pi", "pi"),
 ];
 
+/// Every agent name `--agent` accepts, sorted.
+pub fn known_agents() -> Vec<String> {
+    AGENT_COMMANDS
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
 /// The agents installed on this machine, sorted by name.
 ///
 /// PATH lookup mirrors the first half of `roborev check-agents` without its live agent calls.

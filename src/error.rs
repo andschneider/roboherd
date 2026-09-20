@@ -70,6 +70,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("{path}: agents.{agent} defaults to {model}, which is not in its models list")]
+    ConfigAgentDefault {
+        path: PathBuf,
+        agent: String,
+        model: String,
+    },
+
     #[error("no finished review for this workspace yet")]
     NoFinishedReview,
 

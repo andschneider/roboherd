@@ -1,3 +1,4 @@
+mod agents;
 mod badge;
 mod cli;
 mod clipboard;

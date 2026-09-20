@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::agents;
 use crate::config::Config;
 use crate::error::Result;
 use crate::herdr;
@@ -89,7 +90,8 @@ fn render_environment() -> (String, bool) {
         Some(path) => line(&mut report, "ok", &format!("config: {}", path.display())),
         None => line(&mut report, "warn", "config path could not be determined"),
     }
-    match Config::load() {
+    let loaded = Config::load();
+    match &loaded {
         Ok(config) => line(
             &mut report,
             "ok",
@@ -101,18 +103,111 @@ fn render_environment() -> (String, bool) {
         }
     }
 
-    let agents = roborev::installed_agents();
-    if agents.is_empty() {
+    let installed = roborev::installed_agents();
+    if installed.is_empty() {
         line(
             &mut report,
             "warn",
             "no roborev-compatible agent found on PATH; the commit picker has nothing to offer",
         );
     } else {
-        line(&mut report, "ok", &format!("agents: {}", agents.join(", ")));
+        line(
+            &mut report,
+            "ok",
+            &format!("agents on PATH: {}", installed.join(", ")),
+        );
+    }
+
+    if let Ok(config) = &loaded {
+        let configured: Vec<String> = config.agents.keys().cloned().collect();
+        for (level, message) in render_agent_drift(
+            &configured,
+            &installed,
+            &roborev::known_agents(),
+            Config::path().as_deref(),
+        ) {
+            failed |= level == "fail";
+            line(&mut report, level, &message);
+        }
     }
 
     (report, failed)
+}
+
+/// Report the config as the picker's source of agents, and where it disagrees with PATH.
+///
+/// A name roborev would not accept fails the report, since no install can make it work. Merely
+/// not being on PATH only warns, because the agent it names is one an install would provide.
+fn render_agent_drift(
+    configured: &[String],
+    installed: &[String],
+    known: &[String],
+    path: Option<&Path>,
+) -> Vec<(&'static str, String)> {
+    let mut lines = Vec::new();
+    let (absent, unconfigured) = agents::drift(configured, installed);
+    let (unnamed, uninstalled): (Vec<String>, Vec<String>) =
+        absent.into_iter().partition(|name| !known.contains(name));
+
+    if configured.is_empty() {
+        lines.push((
+            "warn",
+            format!("no agents configured. {}", paste(&unconfigured, path)),
+        ));
+        return lines;
+    }
+    lines.push((
+        "ok",
+        format!("agents configured: {}", configured.join(", ")),
+    ));
+
+    if !unnamed.is_empty() {
+        lines.push((
+            "fail",
+            format!(
+                "not a roborev agent: {}. Valid names: {}",
+                unnamed.join(", "),
+                known.join(", ")
+            ),
+        ));
+    }
+    if !uninstalled.is_empty() {
+        lines.push((
+            "warn",
+            format!(
+                "configured but not on PATH: {}. A review picked for one of these fails inside \
+                 roborev",
+                uninstalled.join(", ")
+            ),
+        ));
+    }
+    if !unconfigured.is_empty() {
+        lines.push((
+            "warn",
+            format!(
+                "on PATH but not configured: {}. {}",
+                unconfigured.join(", "),
+                paste(&unconfigured, path)
+            ),
+        ));
+    }
+    lines
+}
+
+/// The tables to add, indented to hang under the report line that names them.
+fn paste(agents: &[String], path: Option<&Path>) -> String {
+    let destination = match path {
+        Some(path) => path.display().to_string(),
+        None => "the roboherd config".to_string(),
+    };
+    let tables: String = agents::tables(agents)
+        .lines()
+        .map(|line| match line.is_empty() {
+            true => "\n".to_string(),
+            false => format!("\n         {line}"),
+        })
+        .collect();
+    format!("Add to {destination}:\n{tables}")
 }
 
 /// Render every open workspace's `$roborev_*` tokens, pretty-printed the way herdr's sidebar joins
@@ -288,7 +383,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
 
-    use super::{TOKEN_TTL, describe_tokens, render, render_tools};
+    use super::{TOKEN_TTL, describe_tokens, render, render_agent_drift, render_tools};
     use crate::reporter::status::ReporterStatus;
     use crate::requirements::{Check, Level};
 
@@ -343,6 +438,93 @@ mod tests {
     fn absent_and_empty_tokens_both_read_as_a_dash() {
         assert_eq!(describe_tokens(None), "\u{2014}");
         assert_eq!(describe_tokens(Some(&HashMap::new())), "\u{2014}");
+    }
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn each_drift_direction_names_itself_in_the_report() {
+        let rendered = render_agent_drift(
+            &names(&["claude-code", "gemini"]),
+            &names(&["claude-code", "codex"]),
+            &names(&["claude-code", "codex", "gemini"]),
+            Some(Path::new("/cfg/config.toml")),
+        );
+        let report: String = rendered
+            .iter()
+            .map(|(level, message)| format!("{level} {message}\n"))
+            .collect();
+
+        assert!(report.contains("agents configured: claude-code, gemini"));
+        assert!(report.contains("warn configured but not on PATH: gemini"));
+        assert!(report.contains("warn on PATH but not configured: codex"));
+    }
+
+    #[test]
+    fn an_agreeing_config_reports_no_drift() {
+        let rendered = render_agent_drift(
+            &names(&["codex"]),
+            &names(&["codex"]),
+            &names(&["codex"]),
+            Some(Path::new("/c")),
+        );
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].0, "ok");
+    }
+
+    /// A name no install can satisfy is a config error, unlike one that is merely not installed
+    /// yet, so the two are reported at different levels.
+    #[test]
+    fn an_unknown_agent_name_fails_while_an_uninstalled_one_warns() {
+        let rendered = render_agent_drift(
+            &names(&["claud", "gemini"]),
+            &names(&["codex"]),
+            &names(&["codex", "gemini"]),
+            Some(Path::new("/cfg/config.toml")),
+        );
+        let levelled: Vec<(&str, &str)> = rendered
+            .iter()
+            .map(|(level, message)| (*level, message.as_str()))
+            .collect();
+
+        let failure = levelled
+            .iter()
+            .find(|(level, _)| *level == "fail")
+            .expect("an unknown name fails");
+        assert!(
+            failure.1.contains("not a roborev agent: claud"),
+            "{:?}",
+            failure
+        );
+        assert!(failure.1.contains("codex, gemini"), "{:?}", failure);
+
+        let warning = levelled
+            .iter()
+            .find(|(_, message)| message.starts_with("configured but not on PATH"))
+            .expect("an uninstalled name warns");
+        assert_eq!(warning.0, "warn");
+        assert!(warning.1.contains("gemini"), "{:?}", warning);
+        assert!(!warning.1.contains("claud"), "{:?}", warning);
+    }
+
+    /// An unconfigured agent is only actionable if the report shows what to paste.
+    #[test]
+    fn an_empty_config_prints_the_tables_to_add() {
+        let rendered = render_agent_drift(
+            &[],
+            &names(&["codex"]),
+            &names(&["codex"]),
+            Some(Path::new("/cfg/config.toml")),
+        );
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].0, "warn");
+
+        let message = &rendered[0].1;
+        assert!(message.contains("/cfg/config.toml"), "{message}");
+        assert!(message.contains("[agents.codex]"), "{message}");
+        assert!(message.contains("models = []"), "{message}");
     }
 
     #[test]
